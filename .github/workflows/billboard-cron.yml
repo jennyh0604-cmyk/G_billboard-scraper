@@ -1,0 +1,31 @@
+name: Scrape Billboard Charts
+
+on:
+  schedule:
+    # 매주 화요일 13:00 UTC (한국 시간 화요일 밤 10시)
+    - cron: '0 13 * * TUE'
+  workflow_dispatch: {}   # 수동 실행도 가능하게
+
+jobs:
+  scrape-and-update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python scraper.py

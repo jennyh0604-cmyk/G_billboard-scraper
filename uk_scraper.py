@@ -5,7 +5,6 @@ from typing import List, Dict, Optional
 
 import requests
 from bs4 import BeautifulSoup
-from supabase import create_client, Client
 
 
 # ===== 0. Supabase 설정 =====
@@ -16,7 +15,13 @@ SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
     raise RuntimeError("환경변수 SUPABASE_URL / SUPABASE_SERVICE_KEY 를 설정하세요.")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+BASE_REST_URL = SUPABASE_URL.rstrip("/") + "/rest/v1"
+
+BASE_HEADERS = {
+    "apikey": SUPABASE_SERVICE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+    "Content-Type": "application/json",
+}
 
 
 # ===== 1. 공통 유틸 =====
@@ -62,13 +67,11 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
     Official Charts 페이지 전체 텍스트(raw_text)를 받아서
     rank / title / artist / LW / Peak / Weeks / chart_date 리스트로 변환.
 
-    HTML 구조(class 이름)를 쓰지 않고,
-    'Number 1', 'Number 2'… 'LW:', 'Peak:', 'Weeks:' 패턴만 이용해서 파싱한다.
+    HTML class에 의존하지 않고,
+    'Number 1', 'Number 2'… 'LW:', 'Peak:', 'Weeks:' 패턴을 이용해서 파싱한다.
     """
-    # chart_date 추출
     chart_date = extract_chart_date(raw_text)
 
-    # 'Number 1' 이후만 잘라서 파싱
     start_idx = raw_text.find("Number 1")
     if start_idx == -1:
         return []
@@ -76,7 +79,6 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
     text = raw_text[start_idx:]
 
     # "Number <rank>" 기준으로 split
-    # parts 구조: ["", "1", "<1번 내용>", "2", "<2번 내용>", ...]
     parts = re.split(r"Number\s+(\d+)", text)
     entries: List[Dict] = []
 
@@ -152,7 +154,6 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
     resp = requests.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
 
-    # BeautifulSoup으로 HTML을 파싱하고, 텍스트만 추출해서 분석
     soup = BeautifulSoup(resp.text, "html.parser")
     raw_text = soup.get_text("\n", strip=True)
 
@@ -161,50 +162,65 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
     return entries
 
 
-def save_entries(table_name: str, entries: List[Dict]) -> None:
+# ===== 2. Supabase REST 로 저장 =====
+
+def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
     """
-    기존 데이터를 싹 지우고, 새 entries를 넣는다.
+    같은 chart_date 데이터 싹 지우고 새로 넣기.
     """
     if not entries:
         print(f"[WARN] {table_name}: 저장할 데이터가 없습니다.")
         return
 
-    print(f"[Supabase] {table_name} 기존 데이터 삭제...")
-    supabase.table(table_name).delete().neq("id", 0).execute()
+    chart_date = entries[0]["chart_date"]
+    if not chart_date:
+        print(f"[WARN] {table_name}: chart_date 없음, 저장 스킵.")
+        return
 
-    # Supabase에 한 번에 insert (1000건 미만이라 문제 없음)
-    print(f"[Supabase] {table_name}에 {len(entries)}개 행 insert...")
-    res = supabase.table(table_name).insert(entries).execute()
-    if res.get("error"):
-        print(f"[ERROR] {table_name} insert 실패:", res["error"])
+    # 1) 해당 날짜 데이터 삭제
+    delete_url = f"{BASE_REST_URL}/{table_name}?chart_date=eq.{chart_date}"
+    print(f"[Supabase] {table_name} {chart_date} 데이터 삭제: {delete_url}")
+    r_del = requests.delete(delete_url, headers=BASE_HEADERS, timeout=20)
+    if not r_del.ok:
+        print(f"[Supabase] {table_name} 삭제 실패: {r_del.status_code} {r_del.text}")
+
+    # 2) 새 데이터 insert
+    insert_url = f"{BASE_REST_URL}/{table_name}"
+    headers = {
+        **BASE_HEADERS,
+        "Prefer": "return=representation",
+    }
+    print(f"[Supabase] {table_name} {len(entries)}개 행 insert...")
+    r_ins = requests.post(insert_url, headers=headers, json=entries, timeout=30)
+    if not r_ins.ok:
+        print(f"[ERROR] {table_name} insert 실패: {r_ins.status_code} {r_ins.text}")
+        r_ins.raise_for_status()
     else:
         print(f"[OK] {table_name} insert 완료.")
 
 
-# ===== 2. 실제 스크래핑 & 저장 흐름 =====
+# ===== 3. 실제 스크래핑 & 저장 흐름 =====
 
 def update_uk_singles_chart():
     print("=== UK Official Singles Chart 스크래핑 시작 ===")
     entries = fetch_official_chart("singles-chart/")
-    save_entries("uk_singles_entries", entries)
+    replace_entries_for_date("uk_singles_entries", entries)
     print("=== UK Official Singles Chart 스크래핑 종료 ===\n")
 
 
 def update_uk_albums_chart():
     print("=== UK Official Albums Chart 스크래핑 시작 ===")
     entries = fetch_official_chart("albums-chart/")
-    save_entries("uk_albums_entries", entries)
+    replace_entries_for_date("uk_albums_entries", entries)
     print("=== UK Official Albums Chart 스크래핑 종료 ===\n")
 
 
 if __name__ == "__main__":
-    # 깃허브 액션이나 로컬에서 직접 실행할 때 둘 다 업데이트
     try:
         update_uk_singles_chart()
         update_uk_albums_chart()
         print("모든 UK 차트 업데이트 완료 ✅")
     except Exception as e:
-        # 에러 로그 보기 쉽게
         import traceback
 
         print("[FATAL] UK 차트 스크래핑 중 오류 발생:")

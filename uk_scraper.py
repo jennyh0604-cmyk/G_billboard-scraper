@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Dict, Optional
 
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 # =========================
 # 0. Supabase 설정 (REST API)
@@ -25,16 +25,15 @@ BASE_HEADERS = {
 }
 
 # =========================
-# 1. 공통 유틸 및 파싱 로직 (Selector 최종 업데이트)
+# 1. 공통 유틸
 # =========================
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
+        "Chrome/120.0 Safari/537.36"
+    )
 }
 
 
@@ -42,24 +41,16 @@ def safe_int(value: Optional[str]) -> Optional[int]:
     """숫자처럼 보이면 int, 아니면 None."""
     if not value:
         return None
-    # 쉼표, 공백, New/RE 등 비숫자 문자열 제거 및 처리
-    value = value.replace(",", "").strip()
-    if value.lower() in ("new", "re", "n/a", "-"):
-        return None
-    
-    # 숫자만 있는지 확인
+    value = value.strip()
     if not value.isdigit():
-        if value.endswith(".") and value[:-1].isdigit():
-            return int(value[:-1])
         return None
-    
     return int(value)
 
 
-def extract_chart_date_from_text(raw_text: str) -> Optional[str]:
+def extract_chart_date(raw_text: str) -> Optional[str]:
     """
-    차트 날짜를 추출
     예시: '14 November 2025 - 20 November 2025'
+    앞쪽 날짜를 chart_date 로 사용.
     """
     m = re.search(r"(\d{1,2} \w+ \d{4})\s*-\s*(\d{1,2} \w+ \d{4})", raw_text)
     if not m:
@@ -67,130 +58,100 @@ def extract_chart_date_from_text(raw_text: str) -> Optional[str]:
 
     start_str = m.group(1)
     try:
-        d = datetime.strptime(start_str, "%d %B %Y").date() 
+        d = datetime.strptime(start_str, "%d %B %Y").date()
         return d.isoformat()
     except ValueError:
-        try:
-            d = datetime.strptime(start_str, "%d %b %Y").date() 
-            return d.isoformat()
-        except ValueError:
-            return None
+        return None
 
 
-def extract_metric_from_chart_item(container: Tag, metric_type: str) -> Optional[int]:
+def parse_officialcharts_text(raw_text: str) -> List[Dict]:
     """
-    차트 항목(container)에서 'LW', 'Peak', 'Wks' 값을 추출.
-    """
-    
-    # Official Charts에서 LW, Peak, Wks를 표시하는 일반적인 클래스입니다.
-    metric_stats = container.select(".metric-chart-stat")
-    
-    for stat in metric_stats:
-        # 라벨(title)을 찾고 metric_type과 비교
-        title_el = stat.select_one(".metric-chart-stat-title")
-        if title_el and title_el.get_text(strip=True).upper() == metric_type.upper():
-            # 값(value)을 찾습니다
-            value_el = stat.select_one(".metric-chart-stat-value")
-            if value_el:
-                raw_value = value_el.get_text(strip=True)
-                return safe_int(raw_value)
-    
-    return None
+    Official Charts 페이지 전체 텍스트(raw_text)를 받아서
+    rank / title / artist / LW / Peak / Weeks / chart_date 리스트로 변환.
 
+    👉 "Number 1" 같은 패턴에 의존하지 않고
+       "LW:", "Peak:", "Weeks:" 라인을 기준으로 파싱한다.
+    """
+    chart_date = extract_chart_date(raw_text)
 
-def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
-    """
-    Official Charts 페이지 soup 객체를 받아 CSS Selector 기반으로 파싱.
-    """
-    # 1. 차트 날짜 추출
-    full_text = soup.get_text("\n", strip=True)
-    chart_date = extract_chart_date_from_text(full_text)
-    if not chart_date:
-        print("⚠️ chart_date를 찾지 못했습니다. 현재 날짜를 사용합니다.")
-        chart_date = datetime.now().date().isoformat()
+    # 특수 공백(NBSP) → 일반 공백으로 정규화
+    text = raw_text.replace("\xa0", " ")
+
+    # 줄 단위로 나누고, 공백 줄 제거
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
 
     entries: List[Dict] = []
-    
-    # 2. 차트 항목 컨테이너 선택 (안정화 로직)
-    
-    # 1순위 시도: 사용자 제공 클래스 (가장 구체적)
-    chart_items = soup.select(".chart-item-content")
-    print(f"[DEBUG] 1순위 Selector (.chart-item-content) 결과: {len(chart_items)}개")
-    
-    if not chart_items:
-        # 2순위 시도: Official Charts에서 흔한 메인 컨테이너 클래스 (li.chart-listing-item)
-        chart_items = soup.select("li.chart-listing-item")
-        print(f"[DEBUG] 2순위 Selector (li.chart-listing-item) 결과: {len(chart_items)}개")
-    
-    if not chart_items:
-        # 3순위 시도: <ol> 태그 안의 모든 <li> (가장 광범위)
-        chart_items = soup.select("ol > li")
-        print(f"[DEBUG] 3순위 Selector (ol > li) 결과: {len(chart_items)}개")
-        
-    if not chart_items:
-        print("⚠️ Official Charts: 어떤 Selector로도 차트 항목을 찾지 못했습니다. 스크래핑 실패.")
-        return entries
-    
-    print(f"[DEBUG] Official Charts: 최종 {len(chart_items)}개 항목 발견.")
-    
-    
-    # 3. 항목별 데이터 추출
-    for idx, item in enumerate(chart_items):
-        rank = idx + 1 
-        title = "Unknown Title"
-        artist = "Unknown Artist"
-        
-        try:
-            # 순위 (rank) 추출
-            # .chart-item-content의 부모 요소(혹은 item 자신)에서 순위 텍스트를 포함하는 요소를 찾습니다.
-            
-            # 순위는 보통 item 자체 또는 item의 부모 요소에 있습니다.
-            rank_container = item.select_one(".chart-listing-item-rank-text") or item.find_parent().select_one(".chart-listing-item-rank-text")
-            
-            if rank_container:
-                parsed_rank = safe_int(rank_container.get_text(strip=True))
-                rank = parsed_rank if parsed_rank is not None else idx + 1
-            else:
-                # 랭크 클래스를 찾지 못하면 인덱스를 사용 (Fallback)
-                pass
+    rank_counter = 0
+    n = len(lines)
+    i = 0
 
-            # 제목 (title) - 사용자 제공 클래스 사용
-            title_el = item.select_one(".chart-name")
-            if title_el:
-                title = title_el.get_text(strip=True)
+    while i < n:
+        line = lines[i]
 
-            # 아티스트 (artist) - 사용자 제공 클래스 사용
-            artist_el = item.select_one(".chart-artist")
-            if artist_el:
-                artist = artist_el.get_text(strip=True)
-
-            # 제목 또는 아티스트가 없는 항목은 광고나 비정상적인 요소일 수 있으므로 건너뜁니다.
-            if title == "Unknown Title" and artist == "Unknown Artist":
-                 # print(f"[SKIP] {idx+1}번 항목: 제목/아티스트를 찾을 수 없어 건너뜁니다.")
-                 continue
-            
-            # 메트릭 추출 (LW, Peak, Wks) 
-            lw = extract_metric_from_chart_item(item, "LW")
-            peak = extract_metric_from_chart_item(item, "PEAK")
-            weeks = extract_metric_from_chart_item(item, "WKS")
-            
-
-            entries.append(
-                {
-                    "rank": rank,
-                    "title": title,
-                    "artist": artist,
-                    "last_week_rank": lw,
-                    "peak_rank": peak,
-                    "weeks_on_chart": weeks,
-                    "chart_date": chart_date,
-                }
-            )
-        except Exception as e:
-            print(f"⚠️ UK Chart 파싱 오류 (idx={idx}, Rank={rank}): {e}")
+        # 1) "LW:" 가 들어간 줄을 곡 블록의 기준으로 사용
+        if "LW:" not in line:
+            i += 1
             continue
 
-    print(f"[DEBUG] 최종 파싱된 항목 개수: {len(entries)}")
+        rank_counter += 1  # 1, 2, 3, ... 순서대로 랭크 부여
+
+        # --- 제목 / 아티스트: LW: 라인 바로 위 두 줄 ---
+        j = i - 1
+        artist = ""
+        title = ""
+
+        if j >= 0:
+            artist = lines[j].strip()
+            j -= 1
+            if j >= 0:
+                title = lines[j].strip()
+
+        # --- LW 값 파싱 ---
+        # 예: "1. LW: 2," 또는 "1. LW: New"
+        m_lw = re.search(r"LW\s*:\s*([0-9]+|New|RE)", line, re.IGNORECASE)
+        if m_lw:
+            lw_raw = m_lw.group(1).strip()
+            # "New", "RE" 같은 텍스트는 None 처리
+            last_week_rank = safe_int(lw_raw)
+        else:
+            last_week_rank = None
+
+        peak_rank = None
+        weeks_on_chart = None
+
+        # 2) 아래쪽 줄들에서 Peak / Weeks 값 찾기
+        k = i + 1
+        while k < n and "LW:" not in lines[k]:
+            if "Peak:" in lines[k]:
+                m_peak = re.search(r"Peak\s*:\s*([0-9]+)", lines[k], re.IGNORECASE)
+                if m_peak:
+                    peak_rank = safe_int(m_peak.group(1))
+
+            if "Weeks:" in lines[k]:
+                m_weeks = re.search(r"Weeks\s*:\s*([0-9]+)", lines[k], re.IGNORECASE)
+                if m_weeks:
+                    weeks_on_chart = safe_int(m_weeks.group(1))
+
+            # 다음 곡 블록(LW:) 을 만나기 전까지는 같은 곡의 정보라고 본다.
+            k += 1
+
+        entries.append(
+            {
+                "rank": rank_counter,
+                "title": title,
+                "artist": artist,
+                "last_week_rank": last_week_rank,
+                "peak_rank": peak_rank,
+                "weeks_on_chart": weeks_on_chart,
+                "chart_date": chart_date,
+            }
+        )
+
+        # 다음 탐색 시작 위치 갱신
+        i = k
+
+    print(f"[DEBUG] parsed entries 개수: {len(entries)}")
     return entries
 
 
@@ -201,20 +162,21 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
       - 'albums-chart/'
     """
     url = f"https://www.officialcharts.com/charts/{chart_path}"
-    print(f"=== [UK] 요청 URL: {url} ===")
+    print(f"[UK] 요청 URL: {url}")
 
     resp = requests.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    
-    entries = parse_officialcharts_soup(soup) 
-    print(f"[UK] {chart_path} 에서 {len(entries)}개 항목 파싱 완료.")
+    raw_text = soup.get_text("\n", strip=True)
+
+    entries = parse_officialcharts_text(raw_text)
+    print(f"[UK] {chart_path} 에서 {len(entries)}개 항목 파싱")
     return entries
 
 
 # =========================
-# 2. Supabase REST 저장 (변경 없음)
+# 2. Supabase REST 저장
 # =========================
 
 def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
@@ -233,7 +195,6 @@ def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
     print(f"[Supabase] {table_name} {chart_date} 데이터 삭제: {delete_url}")
     r_del = requests.delete(delete_url, headers=BASE_HEADERS, timeout=20)
     if not r_del.ok:
-        # 삭제 실패는 경고로 처리하고 계속 진행
         print(f"[Supabase] {table_name} 삭제 실패: {r_del.status_code} {r_del.text}")
 
     # 2) 새 데이터 insert
@@ -249,10 +210,31 @@ def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
 
 
 # =========================
-# 3. 실행 흐름 (변경 없음)
+# 3. 실행 흐름
 # =========================
 
 def update_uk_singles_chart():
-    print("\n=== UK Official Singles Chart 스크래핑 시작 ===")
+    print("=== UK Official Singles Chart 스크래핑 시작 ===")
     entries = fetch_official_chart("singles-chart/")
-    replace_entries_for_date("uk_singles_entries
+    replace_entries_for_date("uk_singles_entries", entries)
+    print("=== UK Official Singles Chart 스크래핑 종료 ===\n")
+
+
+def update_uk_albums_chart():
+    print("=== UK Official Albums Chart 스크래핑 시작 ===")
+    entries = fetch_official_chart("albums-chart/")
+    replace_entries_for_date("uk_albums_entries", entries)
+    print("=== UK Official Albums Chart 스크래핑 종료 ===\n")
+
+
+if __name__ == "__main__":
+    try:
+        update_uk_singles_chart()
+        update_uk_albums_chart()
+        print("모든 UK 차트 업데이트 완료 ✅")
+    except Exception:
+        import traceback
+
+        print("[FATAL] UK 차트 스크래핑 중 오류 발생:")
+        traceback.print_exc()
+        raise

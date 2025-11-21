@@ -18,101 +18,90 @@ SINGLES_URL = "https://www.officialcharts.com/charts/singles-chart/"
 ALBUMS_URL = "https://www.officialcharts.com/charts/albums-chart/"
 
 
-def extract_stats_from_text(text):
-    """텍스트에서 LW, Peak, Weeks 추출"""
-    lw = peak = weeks = None
-    
-    # LW 추출
-    lw_match = re.search(r'LW:\s*(\d+)', text)
-    if lw_match:
-        lw = int(lw_match.group(1))
-    elif re.search(r'LW:\s*(New|RE)', text, re.I):
-        lw = None  # New나 RE는 None 처리
-    
-    # Peak 추출
-    peak_match = re.search(r'Peak:\s*(\d+)', text)
-    if peak_match:
-        peak = int(peak_match.group(1))
-    
-    # Weeks 추출
-    weeks_match = re.search(r'Weeks:\s*(\d+)', text)
-    if weeks_match:
-        weeks = int(weeks_match.group(1))
-    
-    return lw, peak, weeks
+def parse_stat(text: str):
+    """
+    'LW: 2', 'Peak: 1', 'Weeks: 6' 같은 문자열에서
+    숫자만 뽑아서 int로 반환. 숫자가 없으면 None.
+    """
+    nums = re.findall(r"\d+", text)
+    return int(nums[0]) if nums else None
+
 
 
 
 def scrape_uk_chart(url, table):
-    """UK Official Charts 스크래핑 - 완전히 새로운 방식"""
+    """UK Official Charts 스크래핑 (Number n 기반)"""
     print(f"\n{'='*80}")
     print(f"📊 UK 차트 스크래핑")
     print(f"🔗 URL: {url}")
     print(f"💾 테이블: {table}")
     print(f"{'='*80}\n")
-    
-    # 페이지 요청
+
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
-    
     soup = BeautifulSoup(resp.text, "html.parser")
+
     chart_date = datetime.utcnow().strftime("%Y-%m-%d")
-    
-    # Singles / Albums 구분
-    is_singles = "singles" in url.lower()
-    content_url_pattern = "/songs/" if is_singles else "/albums/"
-    
-    print(f"📌 차트 유형: {'Singles' if is_singles else 'Albums'}")
-    print(f"📅 차트 날짜: {chart_date}\n")
-    
-    # 전체 텍스트 가져오기
-    page_text = soup.get_text()
-    
-    # 모든 링크 찾기
-    all_links = soup.find_all("a", href=True)
-    
     results = []
-    seen_titles = set()
-    
-    for link in all_links:
-        href = link.get("href", "")
-        text = link.get_text(strip=True)
-        
-        # 해당 차트의 컨텐츠 링크만 처리
-        if content_url_pattern not in href:
+
+    # 화면에 보이는 "Number 1", "Number 2" ... 텍스트 기준으로 곡 찾기
+    number_tags = soup.find_all(string=re.compile(r"^Number\s+\d+"))
+
+    if not number_tags:
+        print("[WARN] 'Number n' 텍스트를 찾지 못했습니다. HTML 구조가 바뀐 것 같아요.")
+        return
+
+    for idx, num_tag in enumerate(number_tags, start=1):
+        # ----- 순위(rank) -----
+        m = re.search(r"\d+", str(num_tag))
+        rank = int(m.group()) if m else None
+
+        # ----- 제목 / 아티스트 -----
+        # Number n 뒤에는 보통
+        # 1) Image 링크 2개
+        # 2) 제목 링크 1개
+        # 3) 아티스트 링크 1개
+        title_link = num_tag.find_next("a")
+        # Image: ... 링크는 건너뛴다
+        while title_link and title_link.get_text(strip=True).startswith("Image:"):
+            title_link = title_link.find_next("a")
+
+        if not title_link:
             continue
-        
-        # 이미지 링크 제외
-        if text.startswith("Image:") or not text:
+
+        artist_link = title_link.find_next("a")
+        if not artist_link:
             continue
-        
-        # 중복 체크
-        if text in seen_titles:
-            continue
-        seen_titles.add(text)
-        
-        title = text
-        rank = len(results) + 1
-        artist = "Unknown"
-        
-        # 아티스트 찾기: 현재 링크 다음에 나오는 /artist/ 링크
-        next_elem = link.find_next("a", href=re.compile(r"/artist/"))
-        if next_elem:
-            artist_text = next_elem.get_text(strip=True)
-            if artist_text and not artist_text.startswith("Image:"):
-                artist = artist_text
-        
-        # 통계 정보 추출: 제목 텍스트 위치 기준으로 검색
+
+        title = title_link.get_text(strip=True)
+        artist = artist_link.get_text(strip=True)
+
+        # ----- LW / Peak / Weeks -----
         lw = peak = weeks = None
-        title_pos = page_text.find(title)
-        
-        if title_pos != -1:
-            # 제목 위치부터 300자 범위에서 통계 찾기
-            search_text = page_text[title_pos:title_pos + 300]
-            lw, peak, weeks = extract_stats_from_text(search_text)
-        
-        # 결과 저장
+
+        # 아티스트 링크 이후로 나오는 텍스트들을 훑으면서
+        # 다음 "Number n" 이 나오기 전까지에서 통계만 추출
+        for s in artist_link.find_all_next(string=True):
+            txt = s.strip()
+            if not txt:
+                continue
+
+            # 다음 곡 블록으로 넘어가면 종료
+            if txt.startswith("Number "):
+                break
+
+            lower = txt.lower()
+            if "lw" in lower:
+                lw = parse_stat(txt)
+            elif "peak" in lower:
+                peak = parse_stat(txt)
+            elif "week" in lower:
+                weeks = parse_stat(txt)
+
+            if lw is not None and peak is not None and weeks is not None:
+                break
+
         results.append({
             "chart_date": chart_date,
             "rank": rank,
@@ -122,45 +111,25 @@ def scrape_uk_chart(url, table):
             "peak_rank": peak,
             "weeks_on_chart": weeks,
         })
-        
-        # 처음 10개 출력
-        if rank <= 10:
-            print(f"#{rank:2d} │ {title[:40]:<40} │ {artist[:25]:<25}")
-            lw_str = str(lw) if lw else "New"
-            print(f"     LW: {lw_str:>4} │ Peak: {peak or '-':>3} │ Weeks: {weeks or '-'}")
-            print()
-    
-    # 통계 출력
+
+        if idx <= 5:
+            print(f"[DEBUG] #{rank} {title} / {artist} | LW={lw}, Peak={peak}, Weeks={weeks}")
+
     print(f"\n{'='*80}")
     print(f"✅ 총 {len(results)}개 항목 수집 완료")
-    
-    if results:
-        lw_count = sum(1 for r in results if r["last_week_rank"] is not None)
-        peak_count = sum(1 for r in results if r["peak_rank"] is not None)
-        weeks_count = sum(1 for r in results if r["weeks_on_chart"] is not None)
-        
-        print(f"\n📊 통계 데이터 수집률:")
-        print(f"   • Last Week: {lw_count}/{len(results)} ({lw_count/len(results)*100:.1f}%)")
-        print(f"   • Peak: {peak_count}/{len(results)} ({peak_count/len(results)*100:.1f}%)")
-        print(f"   • Weeks: {weeks_count}/{len(results)} ({weeks_count/len(results)*100:.1f}%)")
     print(f"{'='*80}\n")
-    
+
     if not results:
         print("⚠️  수집된 데이터가 없습니다.\n")
         return
-    
-       # Supabase 저장
-    print(f"💾 {table} 테이블에 저장 중...")
 
+    # Supabase 저장 (같은 chart_date 데이터 먼저 삭제 후 삽입)
+    print(f"💾 {table} 테이블에 저장 중...")
     try:
-        # 1) 같은 chart_date 데이터 먼저 삭제
         supabase.table(table).delete().eq("chart_date", chart_date).execute()
         print(f"   - {chart_date} 날짜 기존 레코드 삭제 완료")
-
-        # 2) 새 결과 삽입
         supabase.table(table).insert(results).execute()
         print(f"✅ {table} 저장 완료! (총 {len(results)}개)\n")
-
     except Exception as e:
         print(f"❌ 저장 실패: {e}\n")
         raise
@@ -190,5 +159,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 

@@ -1,10 +1,12 @@
-name: Scrape Billboard Charts
+name: Scrape Charts (US & UK)
 
 on:
   schedule:
-    # 매주 화요일 13:00 UTC (한국 시간 화요일 밤 10시)
+    # 매주 화요일 13:00 UTC (한국 시간 화요일 밤 10시) - Billboard 업데이트 타이밍
     - cron: '0 13 * * TUE'
-  workflow_dispatch: {}   # 수동 실행도 가능하게
+    # 매주 금요일 16:00 UTC (영국 차트 갱신 시점 전후) - UK Official Charts
+    - cron: '0 16 * * FRI'
+  workflow_dispatch: {}   # 필요할 때 수동 실행도 가능
 
 jobs:
   scrape-and-update:
@@ -20,12 +22,18 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Run scraper
+      # 1) Billboard (기존 scraper.py)
+      - name: Run Billboard scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python scraper.py
+        run: python scraper.py
+
+      # 2) UK Official Charts (새로 만든 uk_scraper.py)
+      - name: Run UK Official Charts scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python uk_scraper.py

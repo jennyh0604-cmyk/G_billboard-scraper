@@ -6,8 +6,9 @@ from typing import List, Dict, Optional
 import requests
 from bs4 import BeautifulSoup
 
-
-# ===== 0. Supabase 설정 =====
+# =========================
+# 0. Supabase 설정 (REST API)
+# =========================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
@@ -23,8 +24,9 @@ BASE_HEADERS = {
     "Content-Type": "application/json",
 }
 
-
-# ===== 1. 공통 유틸 =====
+# =========================
+# 1. 공통 유틸
+# =========================
 
 HEADERS = {
     "User-Agent": (
@@ -45,12 +47,12 @@ def safe_int(value: Optional[str]) -> Optional[int]:
     return int(value)
 
 
-def extract_chart_date(text: str) -> Optional[str]:
+def extract_chart_date(raw_text: str) -> Optional[str]:
     """
     예시: '14 November 2025 - 20 November 2025'
-    앞쪽 날짜(14 November 2025)를 chart_date 로 사용.
+    앞쪽 날짜를 chart_date 로 사용.
     """
-    m = re.search(r"(\d{1,2} \w+ \d{4})\s*-\s*(\d{1,2} \w+ \d{4})", text)
+    m = re.search(r"(\d{1,2} \w+ \d{4})\s*-\s*(\d{1,2} \w+ \d{4})", raw_text)
     if not m:
         return None
 
@@ -64,66 +66,88 @@ def extract_chart_date(text: str) -> Optional[str]:
 
 def parse_officialcharts_text(raw_text: str) -> List[Dict]:
     """
-    Official Charts 페이지 전체 텍스트(raw_text)를 받아서
+    Official Charts 페이지 전체 텍스트(raw_text)를 받아
     rank / title / artist / LW / Peak / Weeks / chart_date 리스트로 변환.
+    HTML 구조가 바뀌어도 최대한 버티도록 라인 단위로 파싱.
     """
+    # chart_date 먼저 추출
     chart_date = extract_chart_date(raw_text)
 
-    # 👉 노브레이크 스페이스(\xa0)를 일반 공백으로 통일
+    # 특수 공백(NBSP) → 일반 공백으로 변환
     text = raw_text.replace("\xa0", " ")
 
-    # "Number <순위>" 패턴 기준으로 쪼개기
-    parts = re.split(r"Number\s+(\d+)", text)
+    # 줄 단위로 나누고 공백 라인 제거
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+
     entries: List[Dict] = []
+    i = 0
+    n = len(lines)
 
-    # parts 구조: ["앞부분", "1", "<1번 내용>", "2", "<2번 내용>", ...]
-    if len(parts) < 3:
-        print("[DEBUG] 'Number <n>' 패턴을 찾지 못했습니다.")
-        return []
+    while i < n:
+        m = re.match(r"Number\s+(\d+)", lines[i])
+        if not m:
+            i += 1
+            continue
 
-    for i in range(1, len(parts), 2):
-        rank_str = parts[i]
-        body = parts[i + 1]
-
-        rank = safe_int(rank_str)
+        rank = safe_int(m.group(1))
         if rank is None:
+            i += 1
             continue
 
-        # 줄 단위로 나누고, 공백 제거
-        lines = [ln.strip() for ln in body.splitlines()]
-        lines = [ln for ln in lines if ln]  # 빈 줄 제거
+        # ===== 제목 / 아티스트 찾기 =====
+        j = i + 1
 
-        # "Image: ... cover art" 같은 잡음 라인은 제거
-        while lines and (
-            lines[0].startswith("Image:")
-            or "cover art" in lines[0]
-            or lines[0].startswith("view as")
-            or lines[0].startswith("Official Singles Chart")
-            or lines[0].startswith("Official Albums Chart")
+        # 이미지/설명 텍스트 등 스킵
+        while j < n and (
+            lines[j].startswith("Image:")
+            or "cover art" in lines[j]
+            or lines[j].startswith("view as")
+            or lines[j].startswith("Official Singles Chart")
+            or lines[j].startswith("Official Albums Chart")
         ):
-            lines.pop(0)
+            j += 1
 
-        if len(lines) < 2:
-            # 제목 + 아티스트 두 줄이 안 나오면 스킵
-            continue
+        if j >= n:
+            break
 
-        title = lines[0]
-        artist = lines[1]
-
-        # LW / Peak / Weeks 값은 body 전체에서 정규식으로 찾기
-        m_lw = re.search(r"LW:\s*([0-9]+|New|RE)", body, re.IGNORECASE)
-        m_peak = re.search(r"Peak:\s*([0-9]+)", body, re.IGNORECASE)
-        m_weeks = re.search(r"Weeks:\s*([0-9]+)", body, re.IGNORECASE)
-
-        if m_lw:
-            lw_raw = m_lw.group(1)
-            # "New", "RE" 같은 건 None 처리
-            last_week_rank = safe_int(lw_raw)
+        # title, artist
+        title = lines[j].strip()
+        artist = None
+        if j + 1 < n:
+            artist = lines[j + 1].strip()
         else:
-            last_week_rank = None
+            artist = ""
 
-        peak_rank = safe_int(m_peak.group(1)) if m_peak else None
-        weeks_on_chart = safe_int(m_weeks.group(1)) if m_weeks else None
+        j += 2
+
+        # ===== LW / Peak / Weeks 찾기 =====
+        last_week_rank = None
+        peak_rank = None
+        weeks_on_chart = None
+
+        k = j
+        while k < n and not lines[k].startswith("Number "):
+            line = lines[k]
+
+            if "LW:" in line:
+                # 예: "1. LW: 2,"  또는 "1. LW: New"
+                lw_part = line.split("LW:", 1)[1]
+                lw_value = lw_part.split(",")[0].strip()
+                # "New", "RE" 같은 경우는 None
+                last_week_rank = safe_int(lw_value)
+
+            if "Peak:" in line:
+                pk_part = line.split("Peak:", 1)[1]
+                pk_value = pk_part.split(",")[0].strip()
+                peak_rank = safe_int(pk_value)
+
+            if "Weeks:" in line:
+                wk_part = line.split("Weeks:", 1)[1]
+                wk_value = wk_part.split(",")[0].strip()
+                weeks_on_chart = safe_int(wk_value)
+
+            k += 1
 
         entries.append(
             {
@@ -137,8 +161,11 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
             }
         )
 
-    return entries
+        # 다음 "Number n" 으로 이동
+        i = k
 
+    print(f"[DEBUG] parsed entries 개수: {len(entries)}")
+    return entries
 
 
 def fetch_official_chart(chart_path: str) -> List[Dict]:
@@ -161,7 +188,9 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
     return entries
 
 
-# ===== 2. Supabase REST 로 저장 =====
+# =========================
+# 2. Supabase REST 저장
+# =========================
 
 def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
     """같은 chart_date 데이터 싹 지우고 새로 넣기."""
@@ -174,7 +203,7 @@ def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
         print(f"[WARN] {table_name}: chart_date 없음, 저장 스킵.")
         return
 
-    # 1) 해당 날짜 데이터 삭제
+    # 1) 기존 해당 날짜 데이터 삭제
     delete_url = f"{BASE_REST_URL}/{table_name}?chart_date=eq.{chart_date}"
     print(f"[Supabase] {table_name} {chart_date} 데이터 삭제: {delete_url}")
     r_del = requests.delete(delete_url, headers=BASE_HEADERS, timeout=20)
@@ -193,7 +222,9 @@ def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
         print(f"[OK] {table_name} insert 완료.")
 
 
-# ===== 3. 실제 스크래핑 & 저장 흐름 =====
+# =========================
+# 3. 실행 흐름
+# =========================
 
 def update_uk_singles_chart():
     print("=== UK Official Singles Chart 스크래핑 시작 ===")
@@ -220,5 +251,3 @@ if __name__ == "__main__":
         print("[FATAL] UK 차트 스크래핑 중 오류 발생:")
         traceback.print_exc()
         raise
-
-

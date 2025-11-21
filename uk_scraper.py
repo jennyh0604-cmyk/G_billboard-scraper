@@ -66,9 +66,6 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
     """
     Official Charts 페이지 전체 텍스트(raw_text)를 받아서
     rank / title / artist / LW / Peak / Weeks / chart_date 리스트로 변환.
-
-    HTML class에 의존하지 않고,
-    'Number 1', 'Number 2'… 'LW:', 'Peak:', 'Weeks:' 패턴을 이용해서 파싱한다.
     """
     chart_date = extract_chart_date(raw_text)
 
@@ -105,8 +102,7 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
             lines.pop(0)
 
         if len(lines) < 2:
-            # 제목 + 아티스트 두 줄이 안 나오면 스킵
-            continue
+            continue  # 제목 + 아티스트 없는 항목은 건너뜀
 
         title = lines[0]
         artist = lines[1]
@@ -145,8 +141,6 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
     chart_path 예시:
       - 'singles-chart/'
       - 'albums-chart/'
-
-    반환: entries 리스트 (parse_officialcharts_text 결과)
     """
     url = f"https://www.officialcharts.com/charts/{chart_path}"
     print(f"[UK] 요청 URL: {url}")
@@ -165,9 +159,7 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
 # ===== 2. Supabase REST 로 저장 =====
 
 def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
-    """
-    같은 chart_date 데이터 싹 지우고 새로 넣기.
-    """
+    """같은 chart_date 데이터 싹 지우고 새로 넣기."""
     if not entries:
         print(f"[WARN] {table_name}: 저장할 데이터가 없습니다.")
         return
@@ -186,10 +178,7 @@ def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
 
     # 2) 새 데이터 insert
     insert_url = f"{BASE_REST_URL}/{table_name}"
-    headers = {
-        **BASE_HEADERS,
-        "Prefer": "return=representation",
-    }
+    headers = {**BASE_HEADERS, "Prefer": "return=representation"}
     print(f"[Supabase] {table_name} {len(entries)}개 행 insert...")
     r_ins = requests.post(insert_url, headers=headers, json=entries, timeout=30)
     if not r_ins.ok:
@@ -220,7 +209,7 @@ if __name__ == "__main__":
         update_uk_singles_chart()
         update_uk_albums_chart()
         print("모든 UK 차트 업데이트 완료 ✅")
-    except Exception as e:
+    except Exception:
         import traceback
 
         print("[FATAL] UK 차트 스크래핑 중 오류 발생:")

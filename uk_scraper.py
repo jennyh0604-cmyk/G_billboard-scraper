@@ -68,11 +68,17 @@ def scrape_uk_chart(url: str, table: str):
     # 또는: [곡제목] [아티스트] - LW: X, - Peak: Y, - Weeks: Z
     
     # 모든 /songs/ 링크 찾기 (곡 제목)
-    song_links = soup.find_all("a", href=re.compile(r"/songs/"))
+    # Singles는 /songs/, Albums는 /albums/ 사용
+    if "singles" in url.lower():
+        content_links = soup.find_all("a", href=re.compile(r"/songs/"))
+        artist_pattern = r"/artist/"
+    else:
+        content_links = soup.find_all("a", href=re.compile(r"/albums/"))
+        artist_pattern = r"/artist/"
     
-    print(f"📊 발견된 곡 링크: {len(song_links)}개\n")
+    print(f"📊 발견된 항목 링크: {len(content_links)}개\n")
     
-    for idx, song_link in enumerate(song_links, start=1):
+    for idx, song_link in enumerate(content_links, start=1):
         title = song_link.get_text(strip=True)
         if not title or title.startswith("Image:"):
             continue
@@ -88,32 +94,55 @@ def scrape_uk_chart(url: str, table: str):
             parent = song_link.parent
             if parent:
                 next_link = parent.find_next("a")
-                if next_link and "/artist/" in next_link.get("href", ""):
+                if next_link and artist_pattern in next_link.get("href", ""):
                     artist = next_link.get_text(strip=True)
-        elif "/artist/" in next_sibling.get("href", ""):
+        elif artist_pattern in next_sibling.get("href", ""):
             artist = next_sibling.get_text(strip=True)
         
-        # 통계 정보 추출: 현재 링크부터 200자 정도 범위에서 찾기
-        # 더 넓은 범위 확보
-        search_start = html_content.find(song_link.get("href", ""))
+        # 통계 정보 추출: 현재 링크부터 넓은 범위에서 찾기
+        search_start = html_content.find(title)
         if search_start != -1:
-            # 링크 위치부터 1000자 범위에서 통계 찾기
-            search_text = html_content[search_start:search_start + 1000]
+            # 제목 위치부터 500자 범위에서 통계 찾기
+            search_text = html_content[search_start:search_start + 500]
             
-            # LW 추출
-            lw_match = re.search(r"LW:\s*(\d+|New|RE|new|-)", search_text, re.I)
-            if lw_match:
-                lw = parse_stat_value(lw_match.group(1))
+            # 실제 HTML 패턴: "LW: 1," 또는 "- LW: 1," 또는 "LW:1"
+            # LW 추출 - 여러 패턴 시도
+            lw_patterns = [
+                r"LW[:\s]+(\d+)",  # LW: 1 또는 LW:1
+                r"Last\s+week[:\s]+(\d+)",  # Last week: 1
+                r"-\s*LW[:\s]+(\d+)",  # - LW: 1
+            ]
+            for pattern in lw_patterns:
+                lw_match = re.search(pattern, search_text, re.I)
+                if lw_match:
+                    lw = int(lw_match.group(1))
+                    break
+            
+            # New나 RE 처리
+            if re.search(r"LW[:\s]+(New|RE)", search_text, re.I):
+                lw = None
             
             # Peak 추출
-            peak_match = re.search(r"Peak:\s*(\d+|-)", search_text, re.I)
-            if peak_match:
-                peak = parse_stat_value(peak_match.group(1))
+            peak_patterns = [
+                r"Peak[:\s]+(\d+)",
+                r"-\s*Peak[:\s]+(\d+)",
+            ]
+            for pattern in peak_patterns:
+                peak_match = re.search(pattern, search_text, re.I)
+                if peak_match:
+                    peak = int(peak_match.group(1))
+                    break
             
             # Weeks 추출
-            weeks_match = re.search(r"Weeks:\s*(\d+|-)", search_text, re.I)
-            if weeks_match:
-                weeks = parse_stat_value(weeks_match.group(1))
+            weeks_patterns = [
+                r"Weeks[:\s]+(\d+)",
+                r"-\s*Weeks[:\s]+(\d+)",
+            ]
+            for pattern in weeks_patterns:
+                weeks_match = re.search(pattern, search_text, re.I)
+                if weeks_match:
+                    weeks = int(weeks_match.group(1))
+                    break
         
         # 데이터 저장
         entry = {
@@ -137,6 +166,11 @@ def scrape_uk_chart(url: str, table: str):
     print(f"\n{'='*70}")
     print(f"✅ 총 {len(results)}개 항목 수집 완료")
     
+    if not results:
+        print("⚠️  수집된 데이터가 없습니다.")
+        print(f"{'='*70}\n")
+        return
+    
     # 통계 데이터 수집률 확인
     lw_count = sum(1 for r in results if r["last_week_rank"] is not None)
     peak_count = sum(1 for r in results if r["peak_rank"] is not None)
@@ -147,10 +181,6 @@ def scrape_uk_chart(url: str, table: str):
     print(f"   - Peak: {peak_count}/{len(results)} ({peak_count/len(results)*100:.1f}%)")
     print(f"   - Weeks: {weeks_count}/{len(results)} ({weeks_count/len(results)*100:.1f}%)")
     print(f"{'='*70}\n")
-    
-    if not results:
-        print("⚠️  수집된 데이터가 없습니다.")
-        return
     
     # Supabase 업서트
     print(f"💾 {table} 테이블에 저장 중...")

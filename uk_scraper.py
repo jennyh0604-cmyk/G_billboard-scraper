@@ -25,7 +25,7 @@ BASE_HEADERS = {
 }
 
 # =========================
-# 1. 공통 유틸 및 파싱 로직 (Selector 업데이트)
+# 1. 공통 유틸 및 파싱 로직 (Selector 최종 업데이트)
 # =========================
 
 HEADERS = {
@@ -67,7 +67,6 @@ def extract_chart_date_from_text(raw_text: str) -> Optional[str]:
 
     start_str = m.group(1)
     try:
-        # Official Charts는 시작일 기준으로 날짜가 생성됨
         d = datetime.strptime(start_str, "%d %B %Y").date() 
         return d.isoformat()
     except ValueError:
@@ -83,7 +82,6 @@ def extract_metric_from_chart_item(container: Tag, metric_type: str) -> Optional
     차트 항목(container)에서 'LW', 'Peak', 'Wks' 값을 추출.
     """
     
-    # 모든 메트릭 항목을 선택합니다
     # Official Charts에서 LW, Peak, Wks를 표시하는 일반적인 클래스입니다.
     metric_stats = container.select(".metric-chart-stat")
     
@@ -113,70 +111,69 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
 
     entries: List[Dict] = []
     
-    # 2. 차트 항목 컨테이너 선택 (사용자 제공 클래스의 가장 고유한 부분 사용)
-    # chart-item-content가 하나의 곡 정보를 담는 가장 바깥쪽 컨테이너라고 가정합니다.
+    # 2. 차트 항목 컨테이너 선택 (안정화 로직)
+    
+    # 1순위 시도: 사용자 제공 클래스 (가장 구체적)
     chart_items = soup.select(".chart-item-content")
+    print(f"[DEBUG] 1순위 Selector (.chart-item-content) 결과: {len(chart_items)}개")
     
     if not chart_items:
-        print("⚠️ Official Charts: 차트 항목 (.chart-item-content)을 찾지 못했습니다. Selector를 다시 확인하세요.")
+        # 2순위 시도: Official Charts에서 흔한 메인 컨테이너 클래스 (li.chart-listing-item)
+        chart_items = soup.select("li.chart-listing-item")
+        print(f"[DEBUG] 2순위 Selector (li.chart-listing-item) 결과: {len(chart_items)}개")
+    
+    if not chart_items:
+        # 3순위 시도: <ol> 태그 안의 모든 <li> (가장 광범위)
+        chart_items = soup.select("ol > li")
+        print(f"[DEBUG] 3순위 Selector (ol > li) 결과: {len(chart_items)}개")
+        
+    if not chart_items:
+        print("⚠️ Official Charts: 어떤 Selector로도 차트 항목을 찾지 못했습니다. 스크래핑 실패.")
         return entries
     
-    print(f"[DEBUG] Official Charts: {len(chart_items)}개 항목 발견.")
-
-    # 순위 추출을 위해, 각 항목의 부모 요소를 포함하는 모든 요소(주로 li)를 찾습니다.
-    # Official Charts의 순위는 .chart-item-content 외부에 있는 경우가 많습니다.
-    all_parent_items = soup.select(".chart-listing-item")
+    print(f"[DEBUG] Official Charts: 최종 {len(chart_items)}개 항목 발견.")
     
+    
+    # 3. 항목별 데이터 추출
     for idx, item in enumerate(chart_items):
-        rank = idx + 1 # 기본값 설정 (Fallback)
+        rank = idx + 1 
         title = "Unknown Title"
         artist = "Unknown Artist"
         
         try:
             # 순위 (rank) 추출
+            # .chart-item-content의 부모 요소(혹은 item 자신)에서 순위 텍스트를 포함하는 요소를 찾습니다.
             
-            # 1. .chart-item-content의 가장 가까운 부모 요소를 찾습니다.
-            parent_item = item.find_parent()
+            # 순위는 보통 item 자체 또는 item의 부모 요소에 있습니다.
+            rank_container = item.select_one(".chart-listing-item-rank-text") or item.find_parent().select_one(".chart-listing-item-rank-text")
             
-            if parent_item:
-                # 2. 부모 요소 안에서 순위 텍스트를 포함하는 요소(.chart-listing-item-rank-text)를 찾습니다.
-                # 이 클래스는 순위를 포함하는 요소의 고유 클래스 중 하나로 추정됩니다.
-                rank_el = parent_item.select_one(".chart-listing-item-rank-text")
-                
-                if rank_el:
-                    parsed_rank = safe_int(rank_el.get_text(strip=True))
-                    rank = parsed_rank if parsed_rank is not None else idx + 1
-                else:
-                    # 랭크 클래스가 없으면, 리스트의 인덱스(idx + 1)를 순위로 사용합니다.
-                    print(f"[WARN] Rank Selector (.chart-listing-item-rank-text) 실패. 인덱스 {idx+1} 사용.")
-
+            if rank_container:
+                parsed_rank = safe_int(rank_container.get_text(strip=True))
+                rank = parsed_rank if parsed_rank is not None else idx + 1
+            else:
+                # 랭크 클래스를 찾지 못하면 인덱스를 사용 (Fallback)
+                pass
 
             # 제목 (title) - 사용자 제공 클래스 사용
-            # .chart-name 요소에서 제목을 추출합니다.
             title_el = item.select_one(".chart-name")
             if title_el:
                 title = title_el.get_text(strip=True)
-            else:
-                 print(f"[WARN] Title Selector (.chart-name) 실패.")
 
             # 아티스트 (artist) - 사용자 제공 클래스 사용
-            # .chart-artist 요소에서 아티스트를 추출합니다.
             artist_el = item.select_one(".chart-artist")
             if artist_el:
                 artist = artist_el.get_text(strip=True)
-            else:
-                print(f"[WARN] Artist Selector (.chart-artist) 실패.")
 
-
-            # 메트릭 추출 (LW, Peak, Wks) - item (chart-item-content) 내부에서 찾습니다.
+            # 제목 또는 아티스트가 없는 항목은 광고나 비정상적인 요소일 수 있으므로 건너뜁니다.
+            if title == "Unknown Title" and artist == "Unknown Artist":
+                 # print(f"[SKIP] {idx+1}번 항목: 제목/아티스트를 찾을 수 없어 건너뜁니다.")
+                 continue
+            
+            # 메트릭 추출 (LW, Peak, Wks) 
             lw = extract_metric_from_chart_item(item, "LW")
             peak = extract_metric_from_chart_item(item, "PEAK")
             weeks = extract_metric_from_chart_item(item, "WKS")
             
-            # 제목 또는 아티스트가 없는 항목은 광고나 비정상적인 요소일 수 있으므로 건너뜁니다.
-            if title == "Unknown Title" or artist == "Unknown Artist":
-                 print(f"[SKIP] {idx+1}번 항목: 제목/아티스트를 찾을 수 없어 건너뜁니다.")
-                 continue
 
             entries.append(
                 {
@@ -190,10 +187,10 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
                 }
             )
         except Exception as e:
-            print(f"⚠️ UK Chart 파싱 오류 (idx={idx}): {e}")
+            print(f"⚠️ UK Chart 파싱 오류 (idx={idx}, Rank={rank}): {e}")
             continue
 
-    print(f"[DEBUG] parsed entries 개수: {len(entries)}")
+    print(f"[DEBUG] 최종 파싱된 항목 개수: {len(entries)}")
     return entries
 
 
@@ -211,7 +208,6 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
 
     soup = BeautifulSoup(resp.text, "html.parser")
     
-    # CSS Selector 기반의 새로운 파싱 함수 호출
     entries = parse_officialcharts_soup(soup) 
     print(f"[UK] {chart_path} 에서 {len(entries)}개 항목 파싱 완료.")
     return entries
@@ -259,25 +255,4 @@ def replace_entries_for_date(table_name: str, entries: List[Dict]) -> None:
 def update_uk_singles_chart():
     print("\n=== UK Official Singles Chart 스크래핑 시작 ===")
     entries = fetch_official_chart("singles-chart/")
-    replace_entries_for_date("uk_singles_entries", entries)
-    print("=== UK Official Singles Chart 스크래핑 종료 ===")
-
-
-def update_uk_albums_chart():
-    print("\n=== UK Official Albums Chart 스크래핑 시작 ===")
-    entries = fetch_official_chart("albums-chart/")
-    replace_entries_for_date("uk_albums_entries", entries)
-    print("=== UK Official Albums Chart 스크래핑 종료 ===")
-
-
-if __name__ == "__main__":
-    try:
-        update_uk_singles_chart()
-        update_uk_albums_chart()
-        print("\n모든 UK 차트 업데이트 완료 ✅")
-    except Exception:
-        import traceback
-
-        print("[FATAL] UK 차트 스크래핑 중 오류 발생:")
-        traceback.print_exc()
-        raise
+    replace_entries_for_date("uk_singles_entries

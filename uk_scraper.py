@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 # =========================
-# 0. Supabase 설정 (변경 없음)
+# 0. Supabase 설정 (REST API)
 # =========================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -82,13 +82,11 @@ def extract_metric_from_chart_item(container: Tag, metric_type: str) -> Optional
     """
     차트 항목(container)에서 'LW', 'Peak', 'Wks' 값을 추출.
     
-    Official Charts의 새로운 구조:
-    각 메트릭은 'metric-chart-stat' 클래스를 가진 div 안에 있으며,
-    라벨(LW, Peak, Wks)은 'metric-chart-stat-title' 안에,
-    값은 'metric-chart-stat-value' 안에 있습니다.
+    메트릭은 '.metric-chart-stat' 클래스를 가진 요소 내부에 있다고 가정합니다.
     """
     
     # 모든 메트릭 항목을 선택합니다
+    # .metric-chart-stat 클래스는 Official Charts에서 LW, Peak, Wks를 표시하는 일반적인 방식입니다.
     metric_stats = container.select(".metric-chart-stat")
     
     for stat in metric_stats:
@@ -107,9 +105,8 @@ def extract_metric_from_chart_item(container: Tag, metric_type: str) -> Optional
 def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
     """
     Official Charts 페이지 soup 객체를 받아 CSS Selector 기반으로 파싱.
-    CSS Selector를 최신 구조에 맞게 업데이트했습니다.
     """
-    # 1. 차트 날짜 추출 (기존의 텍스트 기반 방식 사용)
+    # 1. 차트 날짜 추출
     full_text = soup.get_text("\n", strip=True)
     chart_date = extract_chart_date_from_text(full_text)
     if not chart_date:
@@ -118,8 +115,7 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
 
     entries: List[Dict] = []
     
-    # 2. 차트 항목 컨테이너 선택 (업데이트된 Selector 사용: .chart-listing-item)
-    # .chart-item 대신 .chart-listing-item을 사용합니다.
+    # 2. 차트 항목 컨테이너 선택 (.chart-listing-item을 메인 항목으로 가정)
     chart_items = soup.select(".chart-listing-item")
     
     if not chart_items:
@@ -129,27 +125,32 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
     print(f"[DEBUG] Official Charts: {len(chart_items)}개 항목 발견.")
 
     for idx, item in enumerate(chart_items):
+        rank = idx + 1 # 기본값 설정
+        title = "Unknown Title"
+        artist = "Unknown Artist"
+        
         try:
             # 순위 (rank)
-            # 순위는 .chart-listing-item-rank-text 안에 있습니다.
+            # .chart-listing-item-rank-text 요소에서 순위를 추출합니다.
             rank_el = item.select_one(".chart-listing-item-rank-text")
             
-            rank = safe_int(rank_el.get_text(strip=True)) if rank_el else idx + 1
-            if rank is None:
-                rank = idx + 1 
+            if rank_el:
+                parsed_rank = safe_int(rank_el.get_text(strip=True))
+                rank = parsed_rank if parsed_rank is not None else idx + 1
+            
+            # 제목 (title) - 사용자 제공 클래스 사용
+            # .chart-name 요소에서 제목을 추출합니다.
+            title_el = item.select_one(".chart-name")
+            if title_el:
+                title = title_el.get_text(strip=True)
 
-            # 제목 (title) 
-            # 제목은 .chart-listing-item-title 안에 있습니다.
-            title_el = item.select_one(".chart-listing-item-title")
-            title = title_el.get_text(strip=True) if title_el else "Unknown Title"
+            # 아티스트 (artist) - 사용자 제공 클래스 사용
+            # .chart-artist 요소에서 아티스트를 추출합니다.
+            artist_el = item.select_one(".chart-artist")
+            if artist_el:
+                artist = artist_el.get_text(strip=True)
 
-            # 아티스트 (artist) 
-            # 아티스트는 .chart-listing-item-artist 안에 있습니다.
-            artist_el = item.select_one(".chart-listing-item-artist")
-            artist = artist_el.get_text(strip=True) if artist_el else "Unknown Artist"
-
-            # 메트릭 추출
-            # 메트릭 정보는 메인 컨테이너에서 추출합니다.
+            # 메트릭 추출 (LW, Peak, Wks)
             lw = extract_metric_from_chart_item(item, "LW")
             peak = extract_metric_from_chart_item(item, "PEAK")
             weeks = extract_metric_from_chart_item(item, "WKS")
@@ -166,7 +167,6 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
                 }
             )
         except Exception as e:
-            # print(f"⚠️ UK Chart 파싱 오류 (idx={idx}, title='{title}'): {e}") # title 변수가 정의되지 않았을 수 있으므로 주석 처리
             print(f"⚠️ UK Chart 파싱 오류 (idx={idx}): {e}")
             continue
 

@@ -20,13 +20,26 @@ SINGLES_URL = "https://www.officialcharts.com/charts/singles-chart/"
 ALBUMS_URL = "https://www.officialcharts.com/charts/albums-chart/"
 
 
+def parse_stat_value(text: str) -> int:
+    """통계 값에서 숫자 추출"""
+    if not text:
+        return None
+    text = text.strip()
+    # "New", "RE" 같은 특수값은 None 처리
+    if text.upper() in ["NEW", "RE", "-"]:
+        return None
+    # 숫자만 추출
+    match = re.search(r"\d+", text)
+    return int(match.group()) if match else None
+
+
 def scrape_uk_chart(url: str, table: str):
-    """UK Official Charts 스크래핑"""
-    print(f"\n{'='*60}")
-    print(f"UK 차트 스크래핑 시작")
-    print(f"URL: {url}")
-    print(f"TABLE: {table}")
-    print(f"{'='*60}\n")
+    """UK Official Charts 스크래핑 - 실제 HTML 구조 기반"""
+    print(f"\n{'='*70}")
+    print(f"🎵 UK 차트 스크래핑 시작")
+    print(f"📍 URL: {url}")
+    print(f"💾 TABLE: {table}")
+    print(f"{'='*70}\n")
 
     # 페이지 요청
     headers = {
@@ -34,115 +47,120 @@ def scrape_uk_chart(url: str, table: str):
     }
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    
+    html_content = resp.text
+    soup = BeautifulSoup(html_content, "html.parser")
 
     # 차트 날짜 (기본값: 오늘)
     chart_date = datetime.utcnow().strftime("%Y-%m-%d")
 
     results = []
-    current_rank = 0
-
-    # 실제 페이지 구조: 각 곡이 링크로 되어 있고, 그 뒤에 통계 정보가 나옴
-    # 패턴: [곡 링크] [가수 링크] - LW: X, Peak: Y, Weeks: Z
     
-    # 모든 링크 찾기
-    all_links = soup.find_all("a", href=True)
+    # 실제 HTML에서 패턴 찾기:
+    # 1) 제목 링크: /songs/xxx
+    # 2) 아티스트 링크: /artist/xxx
+    # 3) 통계: "LW: 1," "Peak: 2," "Weeks: 3"
     
-    i = 0
-    while i < len(all_links):
-        link = all_links[i]
-        href = link.get("href", "")
-        text = link.get_text(strip=True)
-        
-        # 커버 이미지 스킵
-        if text.startswith("Image:") or not text:
-            i += 1
+    # 전체 텍스트를 가져와서 패턴 매칭
+    page_text = soup.get_text()
+    
+    # 각 곡마다 나타나는 패턴: [곡제목] [아티스트] LW: X, Peak: Y, Weeks: Z
+    # 또는: [곡제목] [아티스트] - LW: X, - Peak: Y, - Weeks: Z
+    
+    # 모든 /songs/ 링크 찾기 (곡 제목)
+    song_links = soup.find_all("a", href=re.compile(r"/songs/"))
+    
+    print(f"📊 발견된 곡 링크: {len(song_links)}개\n")
+    
+    for idx, song_link in enumerate(song_links, start=1):
+        title = song_link.get_text(strip=True)
+        if not title or title.startswith("Image:"):
             continue
+            
+        rank = idx
+        artist = "Unknown"
+        lw = peak = weeks = None
         
-        # 곡 링크 찾기 (/songs/ 포함)
-        if "/songs/" in href:
-            current_rank += 1
-            
-            title = text
-            artist = "Unknown"
-            lw = peak = weeks = None
-            
-            # 다음 링크가 아티스트일 가능성 높음
-            if i + 1 < len(all_links):
-                next_link = all_links[i + 1]
-                next_href = next_link.get("href", "")
-                next_text = next_link.get_text(strip=True)
-                
-                # 아티스트 링크 확인
-                if "/artist/" in next_href and next_text:
-                    artist = next_text
-                    i += 1  # 아티스트 링크 건너뛰기
-            
-            # 현재 링크 주변 텍스트에서 통계 정보 추출
-            # 부모 또는 형제 요소에서 "LW:", "Peak:", "Weeks:" 찾기
-            parent = link.find_parent(["div", "section", "li", "p"])
+        # 곡 링크 다음에 있는 아티스트 링크 찾기
+        next_sibling = song_link.find_next_sibling("a")
+        if not next_sibling:
+            # 형제가 없으면 부모의 다음 링크 찾기
+            parent = song_link.parent
             if parent:
-                stats_text = parent.get_text()
-            else:
-                # 다음 몇 개의 요소에서 찾기
-                stats_text = ""
-                for j in range(i, min(i + 10, len(all_links))):
-                    if "/songs/" in all_links[j].get("href", ""):
-                        break  # 다음 곡 시작
-                    stats_text += " " + all_links[j].get_text()
-            
-            # 정규식으로 통계 추출
-            lw_match = re.search(r"LW[:\s]*(\d+|New|RE)", stats_text, re.I)
-            if lw_match:
-                lw_val = lw_match.group(1)
-                if lw_val.isdigit():
-                    lw = int(lw_val)
-                # "New"나 "RE"는 None으로 처리
-            
-            peak_match = re.search(r"Peak[:\s]*(\d+)", stats_text, re.I)
-            if peak_match:
-                peak = int(peak_match.group(1))
-            
-            weeks_match = re.search(r"Weeks[:\s]*(\d+)", stats_text, re.I)
-            if weeks_match:
-                weeks = int(weeks_match.group(1))
-            
-            # 결과 저장
-            results.append({
-                "chart_date": chart_date,
-                "rank": current_rank,
-                "title": title,
-                "artist": artist,
-                "last_week_rank": lw,
-                "peak_rank": peak,
-                "weeks_on_chart": weeks,
-            })
-            
-            # 디버그: 처음 5개만 출력
-            if current_rank <= 5:
-                print(f"#{current_rank:2d} | {title[:40]:<40} | {artist[:30]:<30}")
-                print(f"      LW: {lw or 'N/A':<4} | Peak: {peak or 'N/A':<4} | Weeks: {weeks or 'N/A'}")
-                print()
+                next_link = parent.find_next("a")
+                if next_link and "/artist/" in next_link.get("href", ""):
+                    artist = next_link.get_text(strip=True)
+        elif "/artist/" in next_sibling.get("href", ""):
+            artist = next_sibling.get_text(strip=True)
         
-        i += 1
+        # 통계 정보 추출: 현재 링크부터 200자 정도 범위에서 찾기
+        # 더 넓은 범위 확보
+        search_start = html_content.find(song_link.get("href", ""))
+        if search_start != -1:
+            # 링크 위치부터 1000자 범위에서 통계 찾기
+            search_text = html_content[search_start:search_start + 1000]
+            
+            # LW 추출
+            lw_match = re.search(r"LW:\s*(\d+|New|RE|new|-)", search_text, re.I)
+            if lw_match:
+                lw = parse_stat_value(lw_match.group(1))
+            
+            # Peak 추출
+            peak_match = re.search(r"Peak:\s*(\d+|-)", search_text, re.I)
+            if peak_match:
+                peak = parse_stat_value(peak_match.group(1))
+            
+            # Weeks 추출
+            weeks_match = re.search(r"Weeks:\s*(\d+|-)", search_text, re.I)
+            if weeks_match:
+                weeks = parse_stat_value(weeks_match.group(1))
+        
+        # 데이터 저장
+        entry = {
+            "chart_date": chart_date,
+            "rank": rank,
+            "title": title,
+            "artist": artist,
+            "last_week_rank": lw,
+            "peak_rank": peak,
+            "weeks_on_chart": weeks,
+        }
+        results.append(entry)
+        
+        # 처음 10개 출력
+        if rank <= 10:
+            print(f"#{rank:3d} | {title[:35]:<35} | {artist[:25]:<25}")
+            print(f"       LW: {str(lw) if lw else 'New':>4} | Peak: {peak or '-':>3} | Weeks: {weeks or '-':>3}")
+            print()
     
     # 결과 확인
-    print(f"\n총 {len(results)}개 항목 수집 완료")
+    print(f"\n{'='*70}")
+    print(f"✅ 총 {len(results)}개 항목 수집 완료")
+    
+    # 통계 데이터 수집률 확인
+    lw_count = sum(1 for r in results if r["last_week_rank"] is not None)
+    peak_count = sum(1 for r in results if r["peak_rank"] is not None)
+    weeks_count = sum(1 for r in results if r["weeks_on_chart"] is not None)
+    
+    print(f"📈 데이터 수집률:")
+    print(f"   - Last Week: {lw_count}/{len(results)} ({lw_count/len(results)*100:.1f}%)")
+    print(f"   - Peak: {peak_count}/{len(results)} ({peak_count/len(results)*100:.1f}%)")
+    print(f"   - Weeks: {weeks_count}/{len(results)} ({weeks_count/len(results)*100:.1f}%)")
+    print(f"{'='*70}\n")
     
     if not results:
-        print("[경고] 수집된 데이터가 없습니다. HTML 구조가 변경되었을 수 있습니다.")
+        print("⚠️  수집된 데이터가 없습니다.")
         return
     
     # Supabase 업서트
-    print(f"\n{table} 테이블에 데이터 저장 중...")
+    print(f"💾 {table} 테이블에 저장 중...")
     try:
         supabase.table(table).upsert(results).execute()
         print(f"✅ {table} 저장 완료!\n")
     except Exception as e:
         print(f"❌ 저장 실패: {e}")
-        # 오류 발생 시 첫 번째 항목 출력
-        if results:
-            print(f"첫 번째 데이터 샘플: {results[0]}")
+        print(f"샘플 데이터: {results[0] if results else 'None'}")
+        raise
 
 
 def main():
@@ -150,11 +168,14 @@ def main():
     try:
         scrape_uk_chart(SINGLES_URL, "uk_singles_entries")
         scrape_uk_chart(ALBUMS_URL, "uk_albums_entries")
-        print(f"\n{'='*60}")
+        
+        print(f"\n{'='*70}")
         print("🎉 모든 UK 차트 업데이트 완료!")
-        print(f"{'='*60}\n")
+        print(f"{'='*70}\n")
     except Exception as e:
-        print(f"\n❌ 오류 발생: {e}")
+        print(f"\n❌오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 

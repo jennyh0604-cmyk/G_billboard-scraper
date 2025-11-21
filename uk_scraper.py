@@ -48,7 +48,7 @@ def scrape_uk_chart(url: str, table: str):
     chart_date = datetime.utcnow().strftime("%Y-%m-%d")
     results = []
 
-    # 기존 코드처럼 track 요소 기준으로 파싱
+    # 각 곡은 div.track 안에 들어있음
     tracks = soup.select("div.track")
 
     if not tracks:
@@ -78,17 +78,17 @@ def scrape_uk_chart(url: str, table: str):
 
         # ------------------------
         # 보강: title-artist 블록에서 다시 시도
-        # (일부 항목에서 제목에 가수 이름 일부가 들어가는 문제를 줄이기 위함)
+        # (일부에서 제목 대신 가수 이름 일부가 들어가는 문제 완화)
         # ------------------------
         if (title == "Unknown" or " " not in title) or (artist == "Unknown"):
             ta_block = tr.select_one(".title-artist")
             if ta_block:
                 links = ta_block.find_all("a")
                 if len(links) >= 1:
-                    # 첫 번째 링크를 제목으로 사용
+                    # 첫 번째 링크 = 제목
                     title = links[0].get_text(strip=True)
                 if len(links) >= 2:
-                    # 나머지 링크들을 아티스트로 이어붙임 (여러 명일 수 있으니까)
+                    # 나머지 링크들 = 아티스트들
                     artist_names = [a.get_text(strip=True) for a in links[1:]]
                     artist = " / ".join(artist_names)
 
@@ -112,9 +112,6 @@ def scrape_uk_chart(url: str, table: str):
             elif "week" in lower:
                 weeks = parse_stat(txt)
 
-        # ------------------------
-        # 결과 누적
-        # ------------------------
         results.append({
             "chart_date": chart_date,
             "rank": rank,
@@ -125,7 +122,7 @@ def scrape_uk_chart(url: str, table: str):
             "weeks_on_chart": weeks,
         })
 
-        # 처음 몇 개는 콘솔에 찍어서 확인해볼 수 있게 (원하면 주석 처리해도 됨)
+        # 처음 몇 개는 로그로 확인
         if idx <= 3:
             print(f"[DEBUG] rank={rank}, title={title}, artist={artist}, "
                   f"LW={lw}, Peak={peak}, Weeks={weeks}")

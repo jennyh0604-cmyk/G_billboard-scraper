@@ -79,7 +79,7 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
         print("⚠️ 차트 날짜를 추출할 수 없습니다. 스크래핑을 중단합니다.")
         return []
 
-    # 차트 항목 컨테이너 (이전에 사용된 .chart-item 대신 .chart-item-row 사용)
+    # 차트 항목 컨테이너
     chart_items = soup.select('.chart-item-row') 
     
     if not chart_items:
@@ -96,29 +96,33 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
             rank_el = item.select_one('.position .position__number')
             rank = safe_int(rank_el.text) if rank_el else None
 
-            # 아티스트, 타이틀
+            # 타이틀 & 아티스트
             title_el = item.select_one('.title-artist .title')
             artist_el = item.select_one('.title-artist .artist')
-            title = title_el.text.strip() if title_el else "Unknown Title"
-            artist = artist_el.text.strip() if artist_el else "Unknown Artist"
             
-            # --- ✨ LW, Peak, WKS 데이터 추출 로직 추가/수정 ✨ ---
-            # UK 차트는 데이터가 별도의 칼럼에 명확히 구분되어 있음:
+            title = title_el.text.strip() if title_el else "Unknown Title"
+            # 아티스트 텍스트의 불필요한 공백과 줄바꿈 문자 제거 (가장 흔한 파싱 문제 해결)
+            artist = ' '.join(artist_el.text.split()).strip() if artist_el else "Unknown Artist"
+            
+            # --- ✨ LW, Peak, WKS 데이터 추출 로직 수정 (공백 제거 추가) ✨ ---
             
             # LW (Last Week) - .last-week
             lw_el = item.select_one('.last-week')
-            lw = safe_int(lw_el.text) if lw_el else None
+            # 텍스트 추출 후 불필요한 공백/줄바꿈 제거 ('NEW' 같은 문자열도 처리 가능)
+            lw_text = ' '.join(lw_el.text.split()) if lw_el else None
+            lw = safe_int(lw_text)
             
             # Peak (Peak Position) - .peak-pos
             peak_el = item.select_one('.peak-pos')
-            peak = safe_int(peak_el.text) if peak_el else None
+            peak_text = ' '.join(peak_el.text.split()) if peak_el else None
+            peak = safe_int(peak_text)
             
             # WKS (Weeks On Chart) - .woc
             wks_el = item.select_one('.woc')
-            weeks = safe_int(wks_el.text) if wks_el else None
+            wks_text = ' '.join(wks_el.text.split()) if wks_el else None
+            weeks = safe_int(wks_text)
             # --- ✨ 추출 로직 종료 ✨ ---
 
-            # UK 차트는 커버 이미지를 직접 추출하지 않음 (프론트엔드에서 커버 이미지 필드를 사용하지 않음)
             
             if rank is not None:
                 entries.append(
@@ -135,7 +139,8 @@ def fetch_official_chart(chart_path: str) -> List[Dict]:
                     }
                 )
         except Exception as e:
-            print(f"⚠️ UK Chart 파싱 오류 (idx={idx}, Rank={rank}): {e}")
+            # 오류 발생 시 어떤 항목에서 문제가 생겼는지 출력
+            print(f"⚠️ UK Chart 파싱 오류 (idx={idx}, Rank={rank}, Title={title}, Artist={artist}): {e}")
             continue
 
     print(f"UK Chart 스크래핑 완료. {len(entries)}개 항목 (날짜: {chart_date_str}).")

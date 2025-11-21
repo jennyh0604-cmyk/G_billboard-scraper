@@ -5,7 +5,9 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from supabase import create_client
 
-
+# ---------------------------------------------------
+# Supabase 설정
+# ---------------------------------------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 
@@ -18,70 +20,101 @@ SINGLES_URL = "https://www.officialcharts.com/charts/singles-chart/"
 ALBUMS_URL = "https://www.officialcharts.com/charts/albums-chart/"
 
 
+# ---------------------------------------------------
+# 공통 유틸
+# ---------------------------------------------------
 def parse_stat(text: str):
-    """ 'LW: 2', 'Peak: 1', 'Weeks: 6' → 숫자만 반환 """
+    """
+    'LW: 2' / 'Last week: 2' / 'Weeks on chart: 6' 같은 문자열에서
+    숫자만 뽑아서 int로 반환. 숫자가 없으면 None.
+    """
     nums = re.findall(r"\d+", text)
     return int(nums[0]) if nums else None
 
 
+# ---------------------------------------------------
+# 메인 스크래핑 함수
+# ---------------------------------------------------
 def scrape_uk_chart(url: str, table: str):
-    print(f"\n=== UK 차트 스크래핑 시작 ===\n[URL] {url}\n")
+    print(f"\n=== UK 차트 스크래핑 시작 ===")
+    print(f"[URL] {url}")
+    print(f"[TABLE] {table}\n")
 
     resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # 차트 날짜
+    # 일단 오늘 날짜를 차트 날짜로 사용
     chart_date = datetime.utcnow().strftime("%Y-%m-%d")
-
     results = []
 
-    # "Number 1", "Number 2" ... 패턴으로 전체 곡 찾기
-    number_tags = soup.find_all(string=re.compile(r"^Number\s+\d+"))
+    # 기존 코드처럼 track 요소 기준으로 파싱
+    tracks = soup.select("div.track")
 
-    if not number_tags:
-        print("[경고] 'Number n' 패턴을 찾지 못했습니다. HTML 구조 변경 가능성 있음.")
+    if not tracks:
+        print("[WARN] div.track 요소를 찾지 못했습니다. 사이트 구조가 바뀐 것 같아요.")
         return
 
-    for num_tag in number_tags:
-        # rank 파싱
-        m = re.search(r"\d+", num_tag)
-        rank = int(m.group()) if m else None
+    for idx, tr in enumerate(tracks, start=1):
+        # ------------------------
+        # Rank
+        # ------------------------
+        rank_tag = tr.select_one(".position")
+        rank = int(rank_tag.get_text(strip=True)) if rank_tag else None
 
-        # 다음 두 <a> 태그: 첫 번째는 제목, 두 번째는 아티스트
-        title_tag = num_tag.find_next("a")
-        if not title_tag:
-            continue
-        artist_tag = title_tag.find_next("a")
-        if not artist_tag:
-            continue
+        # ------------------------
+        # Title / Artist 기본 파싱
+        # ------------------------
+        title = "Unknown"
+        artist = "Unknown"
 
-        title = title_tag.get_text(strip=True)
-        artist = artist_tag.get_text(strip=True)
+        title_tag = tr.select_one(".title")
+        artist_tag = tr.select_one(".artist")
 
-        # LW / Peak / Weeks 찾기
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+        if artist_tag:
+            artist = artist_tag.get_text(strip=True)
+
+        # ------------------------
+        # 보강: title-artist 블록에서 다시 시도
+        # (일부 항목에서 제목에 가수 이름 일부가 들어가는 문제를 줄이기 위함)
+        # ------------------------
+        if (title == "Unknown" or " " not in title) or (artist == "Unknown"):
+            ta_block = tr.select_one(".title-artist")
+            if ta_block:
+                links = ta_block.find_all("a")
+                if len(links) >= 1:
+                    # 첫 번째 링크를 제목으로 사용
+                    title = links[0].get_text(strip=True)
+                if len(links) >= 2:
+                    # 나머지 링크들을 아티스트로 이어붙임 (여러 명일 수 있으니까)
+                    artist_names = [a.get_text(strip=True) for a in links[1:]]
+                    artist = " / ".join(artist_names)
+
+        # ------------------------
+        # LW / Peak / Weeks
+        # ------------------------
         lw = peak = weeks = None
+        stats = tr.select("ul.stats li")
 
-        # 아티스트 태그 뒤에서 다음 Number 발생 전까지 탐색
-        for s in artist_tag.find_all_next(string=True):
-            txt = s.strip()
-            if not txt:
-                continue
+        for li in stats:
+            txt = li.get_text(strip=True)
+            lower = txt.lower()
 
-            # 다음 곡을 만나면 break
-            if txt.startswith("Number "):
-                break
-
-            if txt.startswith("LW"):
+            # Last week / LW
+            if "lw" in lower or "last" in lower:
                 lw = parse_stat(txt)
-            elif txt.startswith("Peak"):
+            # Peak position
+            elif "peak" in lower:
                 peak = parse_stat(txt)
-            elif txt.startswith("Weeks"):
+            # Weeks on chart
+            elif "week" in lower:
                 weeks = parse_stat(txt)
 
-            if lw is not None and peak is not None and weeks is not None:
-                break
-
+        # ------------------------
+        # 결과 누적
+        # ------------------------
         results.append({
             "chart_date": chart_date,
             "rank": rank,
@@ -92,15 +125,26 @@ def scrape_uk_chart(url: str, table: str):
             "weeks_on_chart": weeks,
         })
 
-    print(f"{table} → {len(results)}개 항목 저장 중…")
+        # 처음 몇 개는 콘솔에 찍어서 확인해볼 수 있게 (원하면 주석 처리해도 됨)
+        if idx <= 3:
+            print(f"[DEBUG] rank={rank}, title={title}, artist={artist}, "
+                  f"LW={lw}, Peak={peak}, Weeks={weeks}")
+
+    # ---------------------------------------------------
+    # Supabase 업서트
+    # ---------------------------------------------------
+    print(f"\n{table} → {len(results)}개 항목 업서트 중…")
     supabase.table(table).upsert(results).execute()
-    print(f"{table} 저장 완료! 🎉\n")
+    print(f"{table} 저장 완료! ✅\n")
 
 
+# ---------------------------------------------------
+# main
+# ---------------------------------------------------
 def main():
     scrape_uk_chart(SINGLES_URL, "uk_singles_entries")
     scrape_uk_chart(ALBUMS_URL, "uk_albums_entries")
-    print("🇬🇧 UK 차트 전체 업데이트 완료!")
+    print("🎉 모든 UK 차트 업데이트 완료!")
 
 
 if __name__ == "__main__":

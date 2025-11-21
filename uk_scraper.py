@@ -69,15 +69,16 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
     """
     chart_date = extract_chart_date(raw_text)
 
-    start_idx = raw_text.find("Number 1")
-    if start_idx == -1:
-        return []
-
-    text = raw_text[start_idx:]
-
-    # "Number <rank>" 기준으로 split
-    parts = re.split(r"Number\s+(\d+)", text)
+    # 예전에는 "Number 1" 위치를 찾아 잘랐는데,
+    # 공백 문자(노브레이크 스페이스 등) 때문에 못 찾는 경우가 있어서
+    # 전체 텍스트를 대상으로 바로 split 하도록 변경
+    parts = re.split(r"Number\s+(\d+)", raw_text)
     entries: List[Dict] = []
+
+    # parts 구조: ["앞부분", "1", "<1번 내용>", "2", "<2번 내용>", ...]
+    if len(parts) < 3:
+        # "Number <숫자>" 패턴이 아예 없으면 빈 리스트
+        return []
 
     for i in range(1, len(parts), 2):
         rank_str = parts[i]
@@ -102,19 +103,20 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
             lines.pop(0)
 
         if len(lines) < 2:
-            continue  # 제목 + 아티스트 없는 항목은 건너뜀
+            # 제목 + 아티스트 두 줄이 안 나오면 스킵
+            continue
 
         title = lines[0]
         artist = lines[1]
 
         # LW / Peak / Weeks 값은 body 전체에서 정규식으로 찾기
-        m_lw = re.search(r"LW:\s*([0-9]+|New)", body, re.IGNORECASE)
+        m_lw = re.search(r"LW:\s*([0-9]+|New|RE)", body, re.IGNORECASE)
         m_peak = re.search(r"Peak:\s*([0-9]+)", body, re.IGNORECASE)
         m_weeks = re.search(r"Weeks:\s*([0-9]+)", body, re.IGNORECASE)
 
         if m_lw:
             lw_raw = m_lw.group(1)
-            last_week_rank = safe_int(lw_raw)
+            last_week_rank = safe_int(lw_raw)  # "New", "RE"면 None
         else:
             last_week_rank = None
 
@@ -215,3 +217,4 @@ if __name__ == "__main__":
         print("[FATAL] UK 차트 스크래핑 중 오류 발생:")
         traceback.print_exc()
         raise
+

@@ -23,23 +23,24 @@ def extract_stats_from_text(text):
     lw = peak = weeks = None
     
     # LW 추출
-    lw_match = re.search(r'-\s*LW:\s*(\d+)', text)
+    lw_match = re.search(r'LW:\s*(\d+)', text)
     if lw_match:
         lw = int(lw_match.group(1))
-    elif re.search(r'-\s*LW:\s*(New|RE)', text, re.I):
+    elif re.search(r'LW:\s*(New|RE)', text, re.I):
         lw = None  # New나 RE는 None 처리
     
     # Peak 추출
-    peak_match = re.search(r'-\s*Peak:\s*(\d+)', text)
+    peak_match = re.search(r'Peak:\s*(\d+)', text)
     if peak_match:
         peak = int(peak_match.group(1))
     
     # Weeks 추출
-    weeks_match = re.search(r'-\s*Weeks:\s*(\d+)', text)
+    weeks_match = re.search(r'Weeks:\s*(\d+)', text)
     if weeks_match:
         weeks = int(weeks_match.group(1))
     
     return lw, peak, weeks
+
 
 
 def scrape_uk_chart(url, table):
@@ -189,4 +190,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

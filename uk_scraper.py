@@ -25,7 +25,7 @@ ALBUMS_URL = "https://www.officialcharts.com/charts/albums-chart/"
 # ---------------------------------------------------
 def parse_stat(text: str):
     """
-    'LW: 2' / 'Last week: 2' / 'Weeks on chart: 6' 같은 문자열에서
+    'LW: 2' / 'Last week: 2' / 'Weeks: 6' 같은 문자열에서
     숫자만 뽑아서 int로 반환. 숫자가 없으면 None.
     """
     nums = re.findall(r"\d+", text)
@@ -48,69 +48,65 @@ def scrape_uk_chart(url: str, table: str):
     chart_date = datetime.utcnow().strftime("%Y-%m-%d")
     results = []
 
-    # 각 곡은 div.track 안에 들어있음
-    tracks = soup.select("div.track")
+    # 화면에 보이는 "Number 1", "Number 2" ... 텍스트 기준으로 곡 찾기
+    number_tags = soup.find_all(string=re.compile(r"Number\s+\d+"))
 
-    if not tracks:
-        print("[WARN] div.track 요소를 찾지 못했습니다. 사이트 구조가 바뀐 것 같아요.")
+    if not number_tags:
+        print("[WARN] 'Number n' 텍스트를 찾지 못했습니다. HTML 구조가 바뀐 것 같아요.")
         return
 
-    for idx, tr in enumerate(tracks, start=1):
-        # ------------------------
-        # Rank
-        # ------------------------
-        rank_tag = tr.select_one(".position")
-        rank = int(rank_tag.get_text(strip=True)) if rank_tag else None
+    for idx, num_tag in enumerate(number_tags, start=1):
+        # ----- 순위(rank) -----
+        m = re.search(r"\d+", str(num_tag))
+        rank = int(m.group()) if m else None
 
-        # ------------------------
-        # Title / Artist 기본 파싱
-        # ------------------------
+        # ----- 제목 / 아티스트 -----
+        # 'Number n' 이후에 나오는 a 태그들 중
+        # 텍스트가 'Image:' 로 시작하는 것은 커버 이미지라서 제외
         title = "Unknown"
         artist = "Unknown"
 
-        title_tag = tr.select_one(".title")
-        artist_tag = tr.select_one(".artist")
+        candidate_links = num_tag.find_all_next("a", limit=8)
+        non_image_links = []
+        for a in candidate_links:
+            txt = a.get_text(strip=True)
+            if not txt:
+                continue
+            if txt.startswith("Image:"):
+                continue
+            non_image_links.append(a)
 
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-        if artist_tag:
-            artist = artist_tag.get_text(strip=True)
+        if len(non_image_links) >= 1:
+            title = non_image_links[0].get_text(strip=True)
+        if len(non_image_links) >= 2:
+            artist = non_image_links[1].get_text(strip=True)
 
-        # ------------------------
-        # 보강: title-artist 블록에서 다시 시도
-        # (일부에서 제목 대신 가수 이름 일부가 들어가는 문제 완화)
-        # ------------------------
-        if (title == "Unknown" or " " not in title) or (artist == "Unknown"):
-            ta_block = tr.select_one(".title-artist")
-            if ta_block:
-                links = ta_block.find_all("a")
-                if len(links) >= 1:
-                    # 첫 번째 링크 = 제목
-                    title = links[0].get_text(strip=True)
-                if len(links) >= 2:
-                    # 나머지 링크들 = 아티스트들
-                    artist_names = [a.get_text(strip=True) for a in links[1:]]
-                    artist = " / ".join(artist_names)
-
-        # ------------------------
-        # LW / Peak / Weeks
-        # ------------------------
+        # ----- LW / Peak / Weeks -----
         lw = peak = weeks = None
-        stats = tr.select("ul.stats li")
 
-        for li in stats:
-            txt = li.get_text(strip=True)
+        # 통계 텍스트는 보통 제목/아티스트 바로 뒤에 나오는 리스트에 있음
+        # 마지막 non_image 링크 뒤에서부터 문자열들을 훑으면서 찾는다.
+        start_anchor = non_image_links[-1] if non_image_links else num_tag
+
+        for s in start_anchor.find_all_next(string=True):
+            txt = s.strip()
+            if not txt:
+                continue
+
+            # 다음 곡의 "Number n"을 만나면 현재 곡 블록 종료
+            if re.search(r"Number\s+\d+", txt):
+                break
+
             lower = txt.lower()
-
-            # Last week / LW
             if "lw" in lower or "last" in lower:
                 lw = parse_stat(txt)
-            # Peak position
             elif "peak" in lower:
                 peak = parse_stat(txt)
-            # Weeks on chart
             elif "week" in lower:
                 weeks = parse_stat(txt)
+
+            if lw is not None and peak is not None and weeks is not None:
+                break
 
         results.append({
             "chart_date": chart_date,

@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 # =========================
-# 0. Supabase 설정 (REST API)
+# 0. Supabase 설정 (변경 없음)
 # =========================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -25,14 +25,14 @@ BASE_HEADERS = {
 }
 
 # =========================
-# 1. 공통 유틸 및 파싱 로직
+# 1. 공통 유틸 및 파싱 로직 (Selector 업데이트)
 # =========================
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36" # User-Agent 업데이트
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
@@ -59,8 +59,8 @@ def safe_int(value: Optional[str]) -> Optional[int]:
 
 def extract_chart_date_from_text(raw_text: str) -> Optional[str]:
     """
+    차트 날짜를 추출
     예시: '14 November 2025 - 20 November 2025'
-    앞쪽 날짜를 chart_date 로 사용.
     """
     m = re.search(r"(\d{1,2} \w+ \d{4})\s*-\s*(\d{1,2} \w+ \d{4})", raw_text)
     if not m:
@@ -68,43 +68,46 @@ def extract_chart_date_from_text(raw_text: str) -> Optional[str]:
 
     start_str = m.group(1)
     try:
-        # datetime.strptime에서 언어 설정 문제가 생길 수 있으므로 %B (Full month name)를 사용 시 주의
         d = datetime.strptime(start_str, "%d %B %Y").date() 
         return d.isoformat()
     except ValueError:
         try:
-            # 영어 로케일이 아닐 경우를 대비해 %b (Abbreviated month name)도 시도
             d = datetime.strptime(start_str, "%d %b %Y").date() 
             return d.isoformat()
         except ValueError:
             return None
 
 
-def extract_metric_from_chart_item(container: Tag, label_text: str) -> Optional[int]:
+def extract_metric_from_chart_item(container: Tag, metric_type: str) -> Optional[int]:
     """
-    차트 항목(container)에서 'LW', 'Peak', 'Wk' 라벨을 기준으로 숫자를 추출.
+    차트 항목(container)에서 'LW', 'Peak', 'Wks' 값을 추출.
+    
+    Official Charts의 새로운 구조:
+    각 메트릭은 'metric-chart-stat' 클래스를 가진 div 안에 있으며,
+    라벨(LW, Peak, Wks)은 'metric-chart-stat-title' 안에,
+    값은 'metric-chart-stat-value' 안에 있습니다.
     """
-    # 라벨을 포함하는 div 찾기
-    label_div = container.find('div', class_="item-list", string=re.compile(f'^{label_text}', re.IGNORECASE))
     
-    if not label_div:
-        return None
-
-    # 라벨 다음의 값 div 찾기 (보통 같은 부모 아래 다음 형제에 있음)
-    # Official Charts HTML 구조를 확인 후 Selector를 조정
-    value_div = label_div.find_next_sibling('div', class_='item-list-row')
+    # 모든 메트릭 항목을 선택합니다
+    metric_stats = container.select(".metric-chart-stat")
     
-    if not value_div:
-        return None
+    for stat in metric_stats:
+        # 라벨(title)을 찾고 metric_type과 비교
+        title_el = stat.select_one(".metric-chart-stat-title")
+        if title_el and title_el.get_text(strip=True).upper() == metric_type.upper():
+            # 값(value)을 찾습니다
+            value_el = stat.select_one(".metric-chart-stat-value")
+            if value_el:
+                raw_value = value_el.get_text(strip=True)
+                return safe_int(raw_value)
     
-    # 텍스트에서 숫자만 추출
-    raw_value = value_div.get_text(strip=True)
-    return safe_int(raw_value)
+    return None
 
 
 def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
     """
     Official Charts 페이지 soup 객체를 받아 CSS Selector 기반으로 파싱.
+    CSS Selector를 최신 구조에 맞게 업데이트했습니다.
     """
     # 1. 차트 날짜 추출 (기존의 텍스트 기반 방식 사용)
     full_text = soup.get_text("\n", strip=True)
@@ -115,12 +118,12 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
 
     entries: List[Dict] = []
     
-    # 2. 차트 항목 컨테이너 선택 (현재 Official Charts의 구조 기반)
-    # 각 곡/앨범 항목은 'chart-item' 클래스를 가진 div 안에 포함되어 있음
-    chart_items = soup.select(".chart-item")
+    # 2. 차트 항목 컨테이너 선택 (업데이트된 Selector 사용: .chart-listing-item)
+    # .chart-item 대신 .chart-listing-item을 사용합니다.
+    chart_items = soup.select(".chart-listing-item")
     
     if not chart_items:
-        print("⚠️ Official Charts: 차트 항목 (.chart-item)을 찾지 못했습니다. Selector를 확인하세요.")
+        print("⚠️ Official Charts: 차트 항목 (.chart-listing-item)을 찾지 못했습니다. Selector를 다시 확인하세요.")
         return entries
     
     print(f"[DEBUG] Official Charts: {len(chart_items)}개 항목 발견.")
@@ -128,36 +131,29 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
     for idx, item in enumerate(chart_items):
         try:
             # 순위 (rank)
-            rank_el = item.select_one(".chart-item-rank-text")
-            # 순위는 1등 항목의 경우 다른 클래스일 수 있음: .first-item-rank-text
-            if not rank_el:
-                rank_el = item.select_one(".first-item-rank-text")
+            # 순위는 .chart-listing-item-rank-text 안에 있습니다.
+            rank_el = item.select_one(".chart-listing-item-rank-text")
             
             rank = safe_int(rank_el.get_text(strip=True)) if rank_el else idx + 1
             if rank is None:
-                rank = idx + 1 # 순위가 없는 경우 임시로 리스트 인덱스+1 사용
+                rank = idx + 1 
 
-            # 제목 (title) - 보통 'item-title' 클래스
-            title_el = item.select_one(".item-title")
+            # 제목 (title) 
+            # 제목은 .chart-listing-item-title 안에 있습니다.
+            title_el = item.select_one(".chart-listing-item-title")
             title = title_el.get_text(strip=True) if title_el else "Unknown Title"
 
-            # 아티스트 (artist) - 보통 'item-artist' 클래스
-            artist_el = item.select_one(".item-artist")
+            # 아티스트 (artist) 
+            # 아티스트는 .chart-listing-item-artist 안에 있습니다.
+            artist_el = item.select_one(".chart-listing-item-artist")
             artist = artist_el.get_text(strip=True) if artist_el else "Unknown Artist"
 
-            # 메트릭 컨테이너: 'chart-item-metrics' 아래에 LW/Peak/Wk 정보가 있음
-            metrics_container = item.select_one(".chart-item-metrics")
-
-            if metrics_container:
-                # LW (Last Week)
-                lw = extract_metric_from_chart_item(metrics_container, "LW")
-                # Peak Rank
-                peak = extract_metric_from_chart_item(metrics_container, "Peak")
-                # Weeks On Chart
-                weeks = extract_metric_from_chart_item(metrics_container, "Wks")
-            else:
-                lw, peak, weeks = None, None, None
-
+            # 메트릭 추출
+            # 메트릭 정보는 메인 컨테이너에서 추출합니다.
+            lw = extract_metric_from_chart_item(item, "LW")
+            peak = extract_metric_from_chart_item(item, "PEAK")
+            weeks = extract_metric_from_chart_item(item, "WKS")
+            
             entries.append(
                 {
                     "rank": rank,
@@ -170,7 +166,8 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
                 }
             )
         except Exception as e:
-            print(f"⚠️ UK Chart 파싱 오류 (idx={idx}, title='{title}'): {e}")
+            # print(f"⚠️ UK Chart 파싱 오류 (idx={idx}, title='{title}'): {e}") # title 변수가 정의되지 않았을 수 있으므로 주석 처리
+            print(f"⚠️ UK Chart 파싱 오류 (idx={idx}): {e}")
             continue
 
     print(f"[DEBUG] parsed entries 개수: {len(entries)}")

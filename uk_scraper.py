@@ -69,15 +69,16 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
     """
     chart_date = extract_chart_date(raw_text)
 
-    # 예전에는 "Number 1" 위치를 찾아 잘랐는데,
-    # 공백 문자(노브레이크 스페이스 등) 때문에 못 찾는 경우가 있어서
-    # 전체 텍스트를 대상으로 바로 split 하도록 변경
-    parts = re.split(r"Number\s+(\d+)", raw_text)
+    # 👉 노브레이크 스페이스(\xa0)를 일반 공백으로 통일
+    text = raw_text.replace("\xa0", " ")
+
+    # "Number <순위>" 패턴 기준으로 쪼개기
+    parts = re.split(r"Number\s+(\d+)", text)
     entries: List[Dict] = []
 
     # parts 구조: ["앞부분", "1", "<1번 내용>", "2", "<2번 내용>", ...]
     if len(parts) < 3:
-        # "Number <숫자>" 패턴이 아예 없으면 빈 리스트
+        print("[DEBUG] 'Number <n>' 패턴을 찾지 못했습니다.")
         return []
 
     for i in range(1, len(parts), 2):
@@ -116,7 +117,8 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
 
         if m_lw:
             lw_raw = m_lw.group(1)
-            last_week_rank = safe_int(lw_raw)  # "New", "RE"면 None
+            # "New", "RE" 같은 건 None 처리
+            last_week_rank = safe_int(lw_raw)
         else:
             last_week_rank = None
 
@@ -136,6 +138,7 @@ def parse_officialcharts_text(raw_text: str) -> List[Dict]:
         )
 
     return entries
+
 
 
 def fetch_official_chart(chart_path: str) -> List[Dict]:
@@ -217,4 +220,5 @@ if __name__ == "__main__":
         print("[FATAL] UK 차트 스크래핑 중 오류 발생:")
         traceback.print_exc()
         raise
+
 

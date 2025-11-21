@@ -69,9 +69,9 @@ def scrape_uk_chart(url, table):
             "rank": rank,
             "title": title,
             "artist": artist,
-            "last_week_rank": LW,
-            "peak_rank": Peak,
-            "weeks_on_chart": Weeks
+            "last_week_rank": lw,
+            "peak_rank": peak,
+            "weeks_on_chart": weeks
         })
 
     # Supabase 업서트
@@ -87,4 +87,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

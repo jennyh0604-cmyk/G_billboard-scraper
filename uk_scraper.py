@@ -42,14 +42,13 @@ def safe_int(value: Optional[str]) -> Optional[int]:
     """숫자처럼 보이면 int, 아니면 None."""
     if not value:
         return None
-    # 쉼표 제거 및 공백 제거
+    # 쉼표, 공백, New/RE 등 비숫자 문자열 제거 및 처리
     value = value.replace(",", "").strip()
-    if value.lower() in ("new", "re", "n/a"):
+    if value.lower() in ("new", "re", "n/a", "-"):
         return None
     
     # 숫자만 있는지 확인
     if not value.isdigit():
-        # 혹시 '1.'이나 '2.' 같은 형식이 있으면 처리 (예: '1.')
         if value.endswith(".") and value[:-1].isdigit():
             return int(value[:-1])
         return None
@@ -68,6 +67,7 @@ def extract_chart_date_from_text(raw_text: str) -> Optional[str]:
 
     start_str = m.group(1)
     try:
+        # Official Charts는 시작일 기준으로 날짜가 생성됨
         d = datetime.strptime(start_str, "%d %B %Y").date() 
         return d.isoformat()
     except ValueError:
@@ -81,12 +81,10 @@ def extract_chart_date_from_text(raw_text: str) -> Optional[str]:
 def extract_metric_from_chart_item(container: Tag, metric_type: str) -> Optional[int]:
     """
     차트 항목(container)에서 'LW', 'Peak', 'Wks' 값을 추출.
-    
-    메트릭은 '.metric-chart-stat' 클래스를 가진 요소 내부에 있다고 가정합니다.
     """
     
     # 모든 메트릭 항목을 선택합니다
-    # .metric-chart-stat 클래스는 Official Charts에서 LW, Peak, Wks를 표시하는 일반적인 방식입니다.
+    # Official Charts에서 LW, Peak, Wks를 표시하는 일반적인 클래스입니다.
     metric_stats = container.select(".metric-chart-stat")
     
     for stat in metric_stats:
@@ -115,46 +113,71 @@ def parse_officialcharts_soup(soup: BeautifulSoup) -> List[Dict]:
 
     entries: List[Dict] = []
     
-    # 2. 차트 항목 컨테이너 선택 (.chart-listing-item을 메인 항목으로 가정)
-    chart_items = soup.select(".chart-listing-item")
+    # 2. 차트 항목 컨테이너 선택 (사용자 제공 클래스의 가장 고유한 부분 사용)
+    # chart-item-content가 하나의 곡 정보를 담는 가장 바깥쪽 컨테이너라고 가정합니다.
+    chart_items = soup.select(".chart-item-content")
     
     if not chart_items:
-        print("⚠️ Official Charts: 차트 항목 (.chart-listing-item)을 찾지 못했습니다. Selector를 다시 확인하세요.")
+        print("⚠️ Official Charts: 차트 항목 (.chart-item-content)을 찾지 못했습니다. Selector를 다시 확인하세요.")
         return entries
     
     print(f"[DEBUG] Official Charts: {len(chart_items)}개 항목 발견.")
 
+    # 순위 추출을 위해, 각 항목의 부모 요소를 포함하는 모든 요소(주로 li)를 찾습니다.
+    # Official Charts의 순위는 .chart-item-content 외부에 있는 경우가 많습니다.
+    all_parent_items = soup.select(".chart-listing-item")
+    
     for idx, item in enumerate(chart_items):
-        rank = idx + 1 # 기본값 설정
+        rank = idx + 1 # 기본값 설정 (Fallback)
         title = "Unknown Title"
         artist = "Unknown Artist"
         
         try:
-            # 순위 (rank)
-            # .chart-listing-item-rank-text 요소에서 순위를 추출합니다.
-            rank_el = item.select_one(".chart-listing-item-rank-text")
+            # 순위 (rank) 추출
             
-            if rank_el:
-                parsed_rank = safe_int(rank_el.get_text(strip=True))
-                rank = parsed_rank if parsed_rank is not None else idx + 1
+            # 1. .chart-item-content의 가장 가까운 부모 요소를 찾습니다.
+            parent_item = item.find_parent()
             
+            if parent_item:
+                # 2. 부모 요소 안에서 순위 텍스트를 포함하는 요소(.chart-listing-item-rank-text)를 찾습니다.
+                # 이 클래스는 순위를 포함하는 요소의 고유 클래스 중 하나로 추정됩니다.
+                rank_el = parent_item.select_one(".chart-listing-item-rank-text")
+                
+                if rank_el:
+                    parsed_rank = safe_int(rank_el.get_text(strip=True))
+                    rank = parsed_rank if parsed_rank is not None else idx + 1
+                else:
+                    # 랭크 클래스가 없으면, 리스트의 인덱스(idx + 1)를 순위로 사용합니다.
+                    print(f"[WARN] Rank Selector (.chart-listing-item-rank-text) 실패. 인덱스 {idx+1} 사용.")
+
+
             # 제목 (title) - 사용자 제공 클래스 사용
             # .chart-name 요소에서 제목을 추출합니다.
             title_el = item.select_one(".chart-name")
             if title_el:
                 title = title_el.get_text(strip=True)
+            else:
+                 print(f"[WARN] Title Selector (.chart-name) 실패.")
 
             # 아티스트 (artist) - 사용자 제공 클래스 사용
             # .chart-artist 요소에서 아티스트를 추출합니다.
             artist_el = item.select_one(".chart-artist")
             if artist_el:
                 artist = artist_el.get_text(strip=True)
+            else:
+                print(f"[WARN] Artist Selector (.chart-artist) 실패.")
 
-            # 메트릭 추출 (LW, Peak, Wks)
+
+            # 메트릭 추출 (LW, Peak, Wks) - item (chart-item-content) 내부에서 찾습니다.
             lw = extract_metric_from_chart_item(item, "LW")
             peak = extract_metric_from_chart_item(item, "PEAK")
             weeks = extract_metric_from_chart_item(item, "WKS")
             
+            # 제목 또는 아티스트가 없는 항목은 광고나 비정상적인 요소일 수 있으므로 건너뜁니다.
+            if title == "Unknown Title" or artist == "Unknown Artist":
+                 print(f"[SKIP] {idx+1}번 항목: 제목/아티스트를 찾을 수 없어 건너뜁니다.")
+                 continue
+
             entries.append(
                 {
                     "rank": rank,

@@ -148,14 +148,22 @@ def scrape_uk_chart(url, table):
         print("⚠️  수집된 데이터가 없습니다.\n")
         return
     
-    # Supabase 저장
+       # Supabase 저장
     print(f"💾 {table} 테이블에 저장 중...")
+
     try:
-        supabase.table(table).upsert(results).execute()
-        print(f"✅ {table} 저장 완료!\n")
+        # 1) 같은 chart_date 데이터 먼저 삭제
+        supabase.table(table).delete().eq("chart_date", chart_date).execute()
+        print(f"   - {chart_date} 날짜 기존 레코드 삭제 완료")
+
+        # 2) 새 결과 삽입
+        supabase.table(table).insert(results).execute()
+        print(f"✅ {table} 저장 완료! (총 {len(results)}개)\n")
+
     except Exception as e:
         print(f"❌ 저장 실패: {e}\n")
         raise
+
 
 
 def main():
@@ -181,3 +189,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
